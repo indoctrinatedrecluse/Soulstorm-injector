@@ -35,14 +35,14 @@ The project uses CMake's `FetchContent` to automatically download and link its d
     *   Ensure you have a **Visual Studio** toolchain selected.
     *   Set the **Architecture** to **x86**. This is critical for the injection to work.
 3.  **Load CMake**: Wait for CLion to load the CMake project. It will automatically download MinHook and Lua. If it doesn't, reload it via `Tools -> CMake -> Reload CMake Project`.
-4.  **Build**: Select the `injector` run configuration and click the **Build** (hammer) icon. This will compile both the injector and the payload DLL into the `cmake-build-debug` (or release) directory.
+4.  **Build**: Select the `injector` run configuration and click the **Build** (hammer) icon. This will compile both the injector and the payload DLL.
 
 ## Usage
 
-1.  Run the compiled `injector.exe` from the build output directory (e.g., `cmake-build-debug/injector/`). You may need to run it as **Administrator**.
-2.  The injector will now wait until it detects that `Soulstorm.exe` is running.
-3.  Once the game starts, the injector will automatically inject the payload DLL.
-4.  A "beep" sound will confirm that the injection was successful, and a cheat menu will appear in the top-left corner of the game screen.
+1.  **Locate the Executable**: After building, navigate to the output directory. By default, this will be `cmake-build-debug/injector/` inside your project folder.
+2.  **Run the Injector**: Run `injector.exe` from that directory. You may need to run it as **Administrator**.
+3.  **Start the Game**: The injector will now wait until it detects that `Soulstorm.exe` is running. You can start the injector before or after starting the game.
+4.  Once the game starts, the injector will automatically inject the payload DLL. A "beep" sound will confirm success, and a cheat menu will appear in the top-left corner of the game screen.
 
 ### Hotkeys
 - **F2**: Toggle Infinite Health

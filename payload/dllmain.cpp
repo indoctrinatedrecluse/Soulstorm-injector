@@ -1,17 +1,15 @@
 #include <windows.h>
-#include <iostream>
 #include <string>
 #include <vector>
 #include <d3d9.h>
-#include <d3dx9.h>
 
 #include "scanner.h"
-#include "MinHook.h"
+#include "imgui.h"
+#include "imgui_impl_dx9.h"
+#include "imgui_impl_win32.h"
 
 #pragma comment(lib, "d3d9.lib")
-#pragma comment(lib, "d3dx9.lib")
 
-// Lua headers
 extern "C" {
 #include "lua.h"
 #include "lauxlib.h"
@@ -22,155 +20,228 @@ extern "C" {
 uintptr_t g_playerBase = 0;
 lua_State* g_LuaState = nullptr;
 bool g_uninject = false;
-ID3DXFont* g_pFont = nullptr;
+bool g_showMenu = true;
+HWND g_window = nullptr;
+WNDPROC pOriginalWndProc = nullptr;
+HMODULE g_hModule = nullptr; // Handle to our own DLL
 
-// --- Hook Function Pointer Typedefs ---
-typedef int(__thiscall* PlayerBaseFn_t)(void* this_ptr, void* unused, void* arg1);
-typedef void(__thiscall* HealthUpdateFn_t)(void* this_ptr, void* unused, float damage);
-typedef void(__thiscall* ResourceUpdateFn_t)(void* this_ptr, void* unused, void* resource_struct);
-typedef void(__thiscall* BuildTimeUpdateFn_t)(void* this_ptr, void* unused, void* build_struct);
-typedef void(__thiscall* MoraleUpdateFn_t)(void* this_ptr, void* unused, void* esp_plus_10);
-typedef void(__thiscall* SquadCapUpdateFn_t)(void* this_ptr, void* unused);
-typedef void(__thiscall* EquipTimeUpdateFn_t)(void* this_ptr, void* unused);
-typedef void(__thiscall* FogOfWarUpdateFn_t)(void* this_ptr, void* unused);
-typedef long(__stdcall* EndScene_t)(IDirect3DDevice9* pDevice);
-
-// --- Original Function Pointers ---
-PlayerBaseFn_t pOriginalGetPlayerBase = nullptr;
-HealthUpdateFn_t pOriginalHealthUpdate = nullptr;
-ResourceUpdateFn_t pOriginalResourceUpdate = nullptr;
-BuildTimeUpdateFn_t pOriginalBuildTimeUpdate = nullptr;
-MoraleUpdateFn_t pOriginalMoraleUpdate = nullptr;
-SquadCapUpdateFn_t pOriginalSquadCapUpdate = nullptr;
-EquipTimeUpdateFn_t pOriginalEquipTimeUpdate = nullptr;
-FogOfWarUpdateFn_t pOriginalFogOfWarUpdate = nullptr;
-EndScene_t pOriginalEndScene = nullptr;
-
-// --- Hook Targets ---
-uintptr_t g_addrGetPlayerBase = 0;
-uintptr_t g_addrHealthUpdate = 0;
-uintptr_t g_addrResourceUpdate = 0;
-uintptr_t g_addrBuildTimeUpdate = 0;
-uintptr_t g_addrMoraleUpdate = 0;
-uintptr_t g_addrSquadCapUpdate = 0;
-uintptr_t g_addrEquipTimeUpdate = 0;
-uintptr_t g_addrFogOfWarUpdate = 0;
-
-// --- Detour Functions ---
-int __fastcall DetourGetPlayerBase(void* this_ptr, void* edx, void* arg1) {
-    __asm { mov g_playerBase, ebx }
-    return pOriginalGetPlayerBase(this_ptr, edx, arg1);
+// --- Cheat States ---
+namespace Cheats {
+    bool infinite_health = false;
+    bool infinite_resources = false;
+    bool infinite_faith = false;
+    bool infinite_souls = false;
+    bool fast_build = false;
+    bool infinite_morale = false;
+    bool infinite_cap = false;
+    bool instant_equip = false;
+    bool remove_fow = false;
+    bool one_hit_kill = false;
+    bool instant_capture = false;
+    bool fast_abilities = false;
+    bool all_wargear = false;
 }
 
-void __fastcall DetourHealthUpdate(void* this_ptr, void* edx, float damage) {
-    uintptr_t entityOwner = 0;
-    __asm { mov entityOwner, esi }
-    if (*(uintptr_t*)(entityOwner + 0x40) == g_playerBase) return;
-    pOriginalHealthUpdate(this_ptr, edx, damage);
-}
+// --- Hook & Detour Declarations ---
+#define DECLARE_HOOK(name, aob, size) \
+    uintptr_t addr_##name = 0; \
+    uintptr_t ret_##name = 0; \
+    uintptr_t branch_##name = 0; \
+    void __declspec(naked) detour_##name()
 
-void __fastcall DetourResourceUpdate(void* this_ptr, void* edx, void* resource_struct) {
-    uintptr_t resourceOwner = 0;
-    __asm { mov resourceOwner, esi }
-    if (resourceOwner == g_playerBase) {
-        *(float*)((uintptr_t)this_ptr + 0x00) = 99999.0f; // Requisition
-        *(float*)((uintptr_t)this_ptr + 0x04) = 99999.0f; // Power
-        *(float*)((uintptr_t)this_ptr + 0x0C) = 99999.0f; // Faith/Souls
-        return;
-    }
-    pOriginalResourceUpdate(this_ptr, edx, resource_struct);
-}
+// --- Hooks ---
+DECLARE_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50", 6);
+DECLARE_HOOK(InfiniteHealth, "D9 56 14 D9 E8", 5);
+DECLARE_HOOK(InfiniteResources, "D9 58 04 D9 41 08", 6);
+DECLARE_HOOK(FastBuild, "8B 48 0C 89 4F 0C", 5);
+DECLARE_HOOK(InfiniteMorale, "D9 46 08 D8 64 24 10", 7);
+DECLARE_HOOK(InfiniteCap, "8B 28 8D 4C 24 28", 6);
+DECLARE_HOOK(InstantEquipment, "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83", 6);
+DECLARE_HOOK(InstantCapture, "D9 5E 44 74 18", 5);
+DECLARE_HOOK(FastAbilities, "DB 46 78 D9 5C 24 08", 7);
+DECLARE_HOOK(RemoveFOW, "D9 81 60 0C 00 00", 6);
+DECLARE_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18", 7);
+DECLARE_HOOK(AllWargear, "83 39 00 74 03", 5);
 
-void __fastcall DetourBuildTimeUpdate(void* this_ptr, void* edx, void* build_struct) {
-    *(float*)((uintptr_t)this_ptr + 0x0C) = 0.0f;
-    pOriginalBuildTimeUpdate(this_ptr, edx, build_struct);
-}
+// --- Detour Implementations ---
+void __declspec(naked) detour_GetPlayerBase() { __asm { mov g_playerBase, ebx; cmp eax, [edi+0x1B8]; jmp ret_GetPlayerBase; } }
+void __declspec(naked) detour_FastBuild() { __asm { mov dword ptr [eax+0x0C], 0; jmp ret_FastBuild; } }
+void __declspec(naked) detour_InfiniteCap() { __asm { mov dword ptr [eax], 0; mov ebp, [eax]; lea ecx, [esp+0x28]; jmp ret_InfiniteCap; } }
+void __declspec(naked) detour_InstantEquipment() { __asm { mov dword ptr [eax+0x08], 0; jmp ret_InstantEquipment; } }
+void __declspec(naked) detour_FastAbilities() { __asm { mov dword ptr [esi+0x78], 0; jmp ret_FastAbilities; } }
+void __declspec(naked) detour_RemoveFOW() { __asm { mov dword ptr [ecx+0xC58], 0x3dcccccd; jmp ret_RemoveFOW; } }
+void __declspec(naked) detour_AllWargear() { __asm { nop; nop; nop; jmp ret_AllWargear; } }
 
-void __fastcall DetourMoraleUpdate(void* this_ptr, void* edx, void* esp_plus_10) {
-    uintptr_t entityOwner = 0;
-    __asm { mov entityOwner, ebp }
-    if (*(uintptr_t*)(entityOwner + 0x10) == g_playerBase) {
-        *(float*)((uintptr_t)this_ptr + 0x08) = 1.0f; // Set morale to max
-        return;
-    }
-    pOriginalMoraleUpdate(this_ptr, edx, esp_plus_10);
-}
-
-void __fastcall DetourSquadCapUpdate(void* this_ptr, void* edx) {
-    *(float*)this_ptr = 0.0f; // Set current cap usage to 0
-    pOriginalSquadCapUpdate(this_ptr, edx);
-}
-
-void __fastcall DetourEquipTimeUpdate(void* this_ptr, void* edx) {
-    *(float*)((uintptr_t)this_ptr + 0x08) = 0.0f; // Set equipment time to 0
-    pOriginalEquipTimeUpdate(this_ptr, edx);
-}
-
-void __fastcall DetourFogOfWarUpdate(void* this_ptr, void* edx) {
-    *(float*)((uintptr_t)this_ptr + 0xC58) = 0.1f; // A value from the CT
-    pOriginalFogOfWarUpdate(this_ptr, edx);
-}
-
-// --- Lua-to-C++ Bridge ---
-void ToggleHookByName(const char* name, uintptr_t* pAddress, void* pDetour, void* pOriginal, bool enable) {
-    if (*pAddress == 0) return;
-    if (enable) {
-        if (MH_CreateHook((LPVOID)*pAddress, pDetour, (LPVOID*)pOriginal) != MH_OK) return;
-        MH_EnableHook((LPVOID)*pAddress);
-    } else {
-        MH_DisableHook((LPVOID)*pAddress);
+void __declspec(naked) detour_InfiniteHealth() {
+    __asm {
+        mov ecx, [g_playerBase]
+        cmp ebp, ecx
+        jne original_code
+        mov [esi+0x14], 1
+        jmp ret_InfiniteHealth
+    original_code:
+        fst dword ptr [esi+0x14]
+        fld1
+        jmp ret_InfiniteHealth
     }
 }
 
-#define TOGGLE_CHEAT_FUNC(name, addr, detour, original) \
-static int l_Toggle_##name(lua_State* L) { \
-    bool enable = lua_toboolean(L, 1); \
-    ToggleHookByName(#name, &addr, detour, &original, enable); \
-    return 0; \
+void __declspec(naked) detour_InfiniteResources() {
+    __asm {
+        cmp esi, [g_playerBase]
+        jne original_code
+
+        mov dword ptr [eax], 0x49742400
+        mov dword ptr [eax+0x04], 0x49742400
+        mov dword ptr [eax+0x0C], 0x49742400
+        mov dword ptr [eax+0x10], 0x49742400
+        jmp ret_InfiniteResources
+
+    original_code:
+        fstp dword ptr [eax+0x04]
+        fld dword ptr [ecx+0x08]
+        jmp ret_InfiniteResources
+    }
 }
 
-TOGGLE_CHEAT_FUNC(infinite_health, g_addrHealthUpdate, DetourHealthUpdate, pOriginalHealthUpdate)
-TOGGLE_CHEAT_FUNC(infinite_resources, g_addrResourceUpdate, DetourResourceUpdate, pOriginalResourceUpdate)
-TOGGLE_CHEAT_FUNC(fast_build, g_addrBuildTimeUpdate, DetourBuildTimeUpdate, pOriginalBuildTimeUpdate)
-TOGGLE_CHEAT_FUNC(infinite_morale, g_addrMoraleUpdate, DetourMoraleUpdate, pOriginalMoraleUpdate)
-TOGGLE_CHEAT_FUNC(infinite_cap, g_addrSquadCapUpdate, DetourSquadCapUpdate, pOriginalSquadCapUpdate)
-TOGGLE_CHEAT_FUNC(instant_equip, g_addrEquipTimeUpdate, DetourEquipTimeUpdate, pOriginalEquipTimeUpdate)
-TOGGLE_CHEAT_FUNC(remove_fow, g_addrFogOfWarUpdate, DetourFogOfWarUpdate, pOriginalFogOfWarUpdate)
+void __declspec(naked) detour_InfiniteMorale() {
+    __asm {
+        mov eax, [ebp+0x10]
+        cmp eax, [g_playerBase]
+        jne original_code
+        fld dword ptr [esi+0x08]
+        mov dword ptr [esi+0x08], 0x3F800000
+        jmp ret_InfiniteMorale
 
-static int l_draw_text(lua_State* L) {
-    if (!g_pFont) return 0;
-    int x = lua_tointeger(L, 1);
-    int y = lua_tointeger(L, 2);
-    const char* text = lua_tostring(L, 3);
-    RECT rect = { x, y, x, y };
-    g_pFont->DrawTextA(NULL, text, -1, &rect, DT_NOCLIP, D3DCOLOR_ARGB(255, 255, 255, 0));
+    original_code:
+        fld dword ptr [esi+0x08]
+        fsub dword ptr [esp+0x10]
+        jmp ret_InfiniteMorale
+    }
+}
+
+void __declspec(naked) detour_InstantCapture() {
+    __asm {
+        mov edx, [esi+0x40]
+        cmp edx, [g_playerBase]
+        jne original_code
+        mov dword ptr [esi+0x44], 0x43B40000
+        jmp ret_InstantCapture
+
+    original_code:
+        fstp dword ptr [esi+0x44]
+        je branch_InstantCapture
+        jmp ret_InstantCapture
+    }
+}
+
+void __declspec(naked) detour_OneHitKill() {
+    __asm {
+        fld dword ptr [esi+0x08]
+        fstp dword ptr [esp+0x18]
+        mov dword ptr [esi+0x08], 0x47AF0000
+        jmp ret_OneHitKill
+    }
+}
+
+// --- Lua Bridge ---
+static int l_ToggleCheat(lua_State* L) {
+    const char* name = lua_tostring(L, 1);
+    bool enable = lua_toboolean(L, 2);
+
+    #define TOGGLE_JMP_HOOK(cheat, size, ...) if (strcmp(name, #cheat) == 0) { Cheats::cheat = enable; Memory::PlaceJmp(addr_##cheat, enable ? detour_##cheat : nullptr, size, &ret_##cheat, ##__VA_ARGS__); }
+
+    TOGGLE_JMP_HOOK(infinite_health, 5);
+    TOGGLE_JMP_HOOK(infinite_resources, 6);
+    TOGGLE_JMP_HOOK(fast_build, 5);
+    TOGGLE_JMP_HOOK(infinite_morale, 7);
+    TOGGLE_JMP_HOOK(infinite_cap, 6);
+    TOGGLE_JMP_HOOK(instant_equip, 6);
+    TOGGLE_JMP_HOOK(instant_capture, 5, &branch_InstantCapture);
+    TOGGLE_JMP_HOOK(fast_abilities, 7);
+    TOGGLE_JMP_HOOK(remove_fow, 6);
+    TOGGLE_JMP_HOOK(one_hit_kill, 7);
+    TOGGLE_JMP_HOOK(all_wargear, 5);
+
     return 0;
 }
 
+static int l_ImGui_Checkbox(lua_State* L) {
+    const char* label = lua_tostring(L, 1);
+    bool value = lua_toboolean(L, 2);
+    if (ImGui::Checkbox(label, &value)) {
+        lua_pushboolean(L, value);
+        return 1;
+    }
+    return 0;
+}
+
+static int l_ImGui_Begin(lua_State* L) { ImGui::Begin(lua_tostring(L, 1)); return 0; }
+static int l_ImGui_End(lua_State* L) { ImGui::End(); return 0; }
+
 // --- Main Payload & Hooks ---
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK DetourWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (g_showMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
+    return CallWindowProc(pOriginalWndProc, hWnd, uMsg, wParam, lParam);
+}
+
 long __stdcall DetourEndScene(IDirect3DDevice9* pDevice) {
-    if (!g_pFont) {
-        D3DXCreateFont(pDevice, 18, 0, FW_BOLD, 1, false, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial", &g_pFont);
+    static bool init = false;
+    if (!init) {
+        g_window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
+        ImGui::CreateContext();
+        ImGui_ImplWin32_Init(g_window);
+        ImGui_ImplDX9_Init(pDevice);
+        pOriginalWndProc = (WNDPROC)SetWindowLongPtr(g_window, GWLP_WNDPROC, (LONG_PTR)DetourWndProc);
+        init = true;
     }
 
-    lua_getglobal(g_LuaState, "on_render");
-    if (lua_isfunction(g_LuaState, -1)) {
-        lua_pcall(g_LuaState, 0, 0, 0);
+    ImGui_ImplDX9_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    if (g_showMenu) {
+        lua_getglobal(g_LuaState, "on_draw_frame");
+        if (lua_isfunction(g_LuaState, -1)) lua_pcall(g_LuaState, 0, 0, 0);
     }
+
+    ImGui::EndFrame();
+    ImGui::Render();
+    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
 
     return pOriginalEndScene(pDevice);
 }
 
+bool LoadScriptFromResource(const char* scriptName) {
+    HRSRC hRes = FindResource(g_hModule, scriptName, RT_RCDATA);
+    if (!hRes) return false;
+    HGLOBAL hResLoad = LoadResource(g_hModule, hRes);
+    if (!hResLoad) return false;
+    char* scriptData = (char*)LockResource(hResLoad);
+    size_t scriptSize = SizeofResource(g_hModule, hRes);
+    if (scriptData && scriptSize > 0) {
+        if (luaL_loadbuffer(g_LuaState, scriptData, scriptSize, scriptName) == LUA_OK) {
+            return lua_pcall(g_LuaState, 0, 0, 0) == LUA_OK;
+        }
+    }
+    return false;
+}
+
 DWORD WINAPI PayloadThread(LPVOID lpParam) {
     // Find addresses
-    g_addrGetPlayerBase = Memory::FindPattern("WXPMod.dll", "3B 87 B8 01 00 00 75 19 8B CE E8 50");
-    g_addrHealthUpdate = Memory::FindPattern("WXPMod.dll", "D9 56 14 D9 E8");
-    g_addrResourceUpdate = Memory::FindPattern("WXPMod.dll", "D9 58 04 D9 41 08");
-    g_addrBuildTimeUpdate = Memory::FindPattern("WXPMod.dll", "8B 48 0C 89 4F 0C");
-    g_addrMoraleUpdate = Memory::FindPattern("WXPMod.dll", "D9 46 08 D8 64 24 10");
-    g_addrSquadCapUpdate = Memory::FindPattern("WXPMod.dll", "8B 28 8D 4C 24 28");
-    g_addrEquipTimeUpdate = Memory::FindPattern("WXPMod.dll", "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83");
-    g_addrFogOfWarUpdate = Memory::FindPattern("soulstorm.exe", "D9 81 60 0C 00 00");
+    addr_GetPlayerBase = Memory::FindPattern("WXPMod.dll", "3B 87 B8 01 00 00 75 19 8B CE E8 50");
+    addr_InfiniteHealth = Memory::FindPattern("WXPMod.dll", "D9 56 14 D9 E8");
+    addr_InfiniteResources = Memory::FindPattern("WXPMod.dll", "D9 58 04 D9 41 08");
+    addr_FastBuild = Memory::FindPattern("WXPMod.dll", "8B 48 0C 89 4F 0C");
+    addr_InfiniteMorale = Memory::FindPattern("WXPMod.dll", "D9 46 08 D8 64 24 10");
+    addr_InfiniteCap = Memory::FindPattern("WXPMod.dll", "8B 28 8D 4C 24 28");
+    addr_InstantEquipment = Memory::FindPattern("WXPMod.dll", "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83");
+    addr_InstantCapture = Memory::FindPattern("WXPMod.dll", "D9 5E 44 74 18");
+    addr_FastAbilities = Memory::FindPattern("WXPMod.dll", "DB 46 78 D9 5C 24 08");
+    addr_RemoveFOW = Memory::FindPattern("soulstorm.exe", "D9 81 60 0C 00 00");
+    addr_OneHitKill = Memory::FindPattern("WXPMod.dll", "D9 46 08 D9 5C 24 18");
+    addr_AllWargear = Memory::FindPattern("WXPMod.dll", "83 39 00 74 03");
 
     // Hook EndScene for drawing
     HWND window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
@@ -186,54 +257,34 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     pDummyDevice->Release();
     pD3D->Release();
 
-    // Initialize MinHook
     if (MH_Initialize() != MH_OK) return 1;
-
-    // Create all hooks (but don't enable cheat hooks yet)
-    MH_CreateHook((LPVOID)g_addrGetPlayerBase, &DetourGetPlayerBase, (LPVOID*)&pOriginalGetPlayerBase);
-    MH_EnableHook((LPVOID)g_addrGetPlayerBase);
     MH_CreateHook((LPVOID)endSceneAddr, &DetourEndScene, (LPVOID*)&pOriginalEndScene);
     MH_EnableHook((LPVOID)endSceneAddr);
 
+    Memory::PlaceJmp(addr_GetPlayerBase, detour_GetPlayerBase, 6, &ret_GetPlayerBase);
     while (g_playerBase == 0) Sleep(200);
 
-    // Initialize Lua
     g_LuaState = luaL_newstate();
     luaL_openlibs(g_LuaState);
-    lua_register(g_LuaState, "Toggle_infinite_health", l_Toggle_infinite_health);
-    lua_register(g_LuaState, "Toggle_infinite_resources", l_Toggle_infinite_resources);
-    lua_register(g_LuaState, "Toggle_fast_build", l_Toggle_fast_build);
-    lua_register(g_LuaState, "Toggle_infinite_morale", l_Toggle_infinite_morale);
-    lua_register(g_LuaState, "Toggle_infinite_cap", l_Toggle_infinite_cap);
-    lua_register(g_LuaState, "Toggle_instant_equip", l_Toggle_instant_equip);
-    lua_register(g_LuaState, "Toggle_remove_fow", l_Toggle_remove_fow);
-    lua_register(g_LuaState, "draw_text", l_draw_text);
+    lua_register(g_LuaState, "ToggleCheat", l_ToggleCheat);
+    lua_register(g_LuaState, "ImGui_Checkbox", l_ImGui_Checkbox);
+    lua_register(g_LuaState, "ImGui_Begin", l_ImGui_Begin);
+    lua_register(g_LuaState, "ImGui_End", l_ImGui_End);
 
-    lua_pushnumber(g_LuaState, g_playerBase);
-    lua_setglobal(g_LuaState, "playerBase");
-
-    if (luaL_dofile(g_LuaState, "F:/Projects/Soulstorm-injector/payload/lua/main.lua") != LUA_OK) {
-        MessageBoxA(NULL, lua_tostring(g_LuaState, -1), "Lua Error", MB_OK);
+    if (!LoadScriptFromResource("main") || !LoadScriptFromResource("cheats")) {
+        MessageBoxA(NULL, "Failed to load Lua scripts from resource.", "Lua Error", MB_OK);
     }
 
     Beep(750, 300);
 
-    // Main loop for hotkeys
     while (!g_uninject) {
-        if (GetAsyncKeyState(VK_F2) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "infinite_health"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F3) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "infinite_resources"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F4) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "fast_build"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F5) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "infinite_morale"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F6) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "infinite_cap"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F7) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "instant_equip"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_F8) & 1) { lua_getglobal(g_LuaState, "ToggleCheat"); lua_pushstring(g_LuaState, "remove_fow"); lua_pcall(g_LuaState, 1, 0, 0); }
-        if (GetAsyncKeyState(VK_END) & 1) { g_uninject = true; }
+        if (GetAsyncKeyState(VK_INSERT) & 1) g_showMenu = !g_showMenu;
+        if (GetAsyncKeyState(VK_END) & 1) g_uninject = true;
         Sleep(100);
     }
 
-    // Cleanup
     Beep(500, 300);
-    if (g_pFont) g_pFont->Release();
+    SetWindowLongPtr(g_window, GWLP_WNDPROC, (LONG_PTR)pOriginalWndProc);
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
     lua_close(g_LuaState);
@@ -244,6 +295,7 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+        g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
         CreateThread(nullptr, 0, PayloadThread, hModule, 0, nullptr);
     }

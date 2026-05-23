@@ -1,5 +1,6 @@
 #include "scanner.h"
 #include <psapi.h>
+#include <iostream>
 
 #define INRANGE(x,a,b)  (x >= a && x <= b)
 #define getBits( x )    (INRANGE((x&(~0x20)),'A','F') ? ((x&(~0x20)) - 'A' + 0xa) : (INRANGE(x,'0','9') ? x - '0' : 0))
@@ -43,5 +44,45 @@ namespace Memory {
             }
         }
         return 0;
+    }
+
+    void PlaceJmp(uintptr_t address, void* hookFunc, size_t instructionSize, uintptr_t* returnAddress, uintptr_t* branchAddress, int branchOffset) {
+        if (address == 0) return;
+
+        DWORD oldProtect;
+        VirtualProtect((LPVOID)address, instructionSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+
+        if (branchAddress != nullptr) {
+            // Read the relative offset of the conditional jump
+            // Usually 74 XX or 0F 84 XX XX XX XX
+            if (*(BYTE*)address == 0x0F) { // Long jump
+                int relOffset = *(int*)(address + 2);
+                *branchAddress = address + 6 + relOffset;
+            } else { // Short jump
+                char relOffset = *(char*)(address + 1);
+                *branchAddress = address + 2 + relOffset;
+            }
+            // Adjust if the branch address was provided at an offset
+            if (branchOffset > 0) {
+                 if (*(BYTE*)(address+branchOffset) == 0x0F) {
+                     int relOffset = *(int*)(address + branchOffset + 2);
+                     *branchAddress = address + branchOffset + 6 + relOffset;
+                 } else {
+                     char relOffset = *(char*)(address + branchOffset + 1);
+                     *branchAddress = address + branchOffset + 2 + relOffset;
+                 }
+            }
+        }
+
+        *returnAddress = address + instructionSize;
+
+        *(BYTE*)address = 0xE9; // JMP
+        *(uintptr_t*)(address + 1) = (uintptr_t)hookFunc - address - 5;
+
+        for (size_t i = 5; i < instructionSize; i++) {
+            *(BYTE*)(address + i) = 0x90; // NOP
+        }
+
+        VirtualProtect((LPVOID)address, instructionSize, oldProtect, &oldProtect);
     }
 }
