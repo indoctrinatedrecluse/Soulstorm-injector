@@ -1,0 +1,32 @@
+# Build artifacts
+build/
+bin/
+obj/
+out/
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.lib
+*.exp
+
+# CMake
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
+build-*/
+
+# Editor/IDE directories
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+*.sln.docstates
