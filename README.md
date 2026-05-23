@@ -3,7 +3,7 @@
 This project is a C++ and Lua-based modding framework for the game **Dawn of War: Soulstorm**. It uses DLL injection to load a payload that provides various in-game cheats, which can be toggled via hotkeys.
 
 The framework is designed to be robust and flexible:
-- **The Injector (`injector/`)**: A lightweight C++ executable that finds the `Soulstorm.exe` process and injects the payload DLL.
+- **The Injector (`injector/`)**: A lightweight C++ executable that waits for the `Soulstorm.exe` process to appear, then injects the payload DLL into it.
 - **The Payload (`payload/`)**: The core of the mod. It uses pattern scanning to find memory addresses dynamically, ensuring it works across different game versions. It hooks into game functions using MinHook and integrates a Lua scripting engine to manage the cheat logic and UI.
 
 ## Features
@@ -39,9 +39,9 @@ The project uses CMake's `FetchContent` to automatically download and link its d
 
 ## Usage
 
-1.  Launch *Dawn of War: Soulstorm*.
-2.  Navigate to the build output directory (e.g., `cmake-build-debug/injector/`).
-3.  Run the compiled `injector.exe`. You may need to run it as **Administrator** so it has permission to access the game's memory.
+1.  Run the compiled `injector.exe` from the build output directory (e.g., `cmake-build-debug/injector/`). You may need to run it as **Administrator**.
+2.  The injector will now wait until it detects that `Soulstorm.exe` is running.
+3.  Once the game starts, the injector will automatically inject the payload DLL.
 4.  A "beep" sound will confirm that the injection was successful, and a cheat menu will appear in the top-left corner of the game screen.
 
 ### Hotkeys

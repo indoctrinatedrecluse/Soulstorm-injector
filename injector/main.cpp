@@ -2,6 +2,8 @@
 #include <string>
 #include <windows.h>
 #include <tlhelp32.h>
+#include <chrono>
+#include <thread>
 
 // Function to find process ID by executable name
 DWORD GetProcessIdByName(const std::wstring& processName) {
@@ -33,17 +35,17 @@ std::string GetDllPath(const std::string& dllName) {
 }
 
 int main() {
-    std::cout << "Soulstorm Injector Starting..." << std::endl;
+    std::cout << "Soulstorm Injector" << std::endl;
+    std::cout << "==================" << std::endl;
 
-    // 1. Find process (Soulstorm.exe)
+    // 1. Wait for and find process (Soulstorm.exe)
     std::wstring targetProcessName = L"Soulstorm.exe";
-    DWORD processId = GetProcessIdByName(targetProcessName);
+    DWORD processId = 0;
 
-    if (processId == 0) {
-        std::cerr << "[-] Could not find process: " << std::string(targetProcessName.begin(), targetProcessName.end()) << std::endl;
-        std::cerr << "[-] Ensure the game is running." << std::endl;
-        system("pause");
-        return 1;
+    std::cout << "[+] Waiting for Soulstorm.exe..." << std::endl;
+    while (processId == 0) {
+        processId = GetProcessIdByName(targetProcessName);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     std::cout << "[+] Found process ID: " << processId << std::endl;
 
@@ -69,7 +71,7 @@ int main() {
         system("pause");
         return 1;
     }
-    std::cout << "[+] Allocated memory for DLL path at: 0x" << pRemoteString << std::endl;
+    std::cout << "[+] Allocated memory for DLL path at: 0x" << std::hex << pRemoteString << std::dec << std::endl;
 
     // 4. Write DLL path to target process
     SIZE_T bytesWritten;
@@ -113,6 +115,7 @@ int main() {
     CloseHandle(hThread);
     CloseHandle(hProcess);
 
+    std::cout << "[+] All done. Press any key to exit." << std::endl;
     system("pause");
     return 0;
 }
