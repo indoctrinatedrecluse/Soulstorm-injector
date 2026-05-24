@@ -1,3 +1,13 @@
+# v1.1.0
+
+- Reverted to MinHook for robust and reliable function hooking.
+- Fixed Lua linker errors by excluding `onelua.c` from the build process.
+- Refactored detour functions to standard C++ calling conventions, replacing problematic inline assembly.
+- Added comprehensive crash protection:
+  - Implemented `nullptr` checks for failed memory pattern scans.
+  - Wrapped memory access within detour functions in `__try`/`__except` blocks to prevent crashes from access violations.
+- Implemented a unified `Shutdown()` routine triggered on DLL detach or the 'END' key for clean uninjection.
+
 # v1.0.0
 
 - Initial release of the Soulstorm Injector and Lua Payload.
