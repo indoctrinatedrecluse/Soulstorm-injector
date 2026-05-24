@@ -54,7 +54,6 @@ namespace Memory {
 
         if (branchAddress != nullptr) {
             // Read the relative offset of the conditional jump
-            // Usually 74 XX or 0F 84 XX XX XX XX
             if (*(BYTE*)address == 0x0F) { // Long jump
                 int relOffset = *(int*)(address + 2);
                 *branchAddress = address + 6 + relOffset;
@@ -76,12 +75,25 @@ namespace Memory {
 
         *returnAddress = address + instructionSize;
 
-        *(BYTE*)address = 0xE9; // JMP
-        *(uintptr_t*)(address + 1) = (uintptr_t)hookFunc - address - 5;
+        if (hookFunc != nullptr) {
+            *(BYTE*)address = 0xE9; // JMP
+            *(uintptr_t*)(address + 1) = (uintptr_t)hookFunc - address - 5;
 
-        for (size_t i = 5; i < instructionSize; i++) {
-            *(BYTE*)(address + i) = 0x90; // NOP
+            for (size_t i = 5; i < instructionSize; i++) {
+                *(BYTE*)(address + i) = 0x90; // NOP
+            }
         }
+
+        VirtualProtect((LPVOID)address, instructionSize, oldProtect, &oldProtect);
+    }
+
+    void RestoreJmp(uintptr_t address, size_t instructionSize, const BYTE* originalBytes) {
+        if (address == 0 || originalBytes == nullptr) return;
+
+        DWORD oldProtect;
+        VirtualProtect((LPVOID)address, instructionSize, PAGE_EXECUTE_READWRITE, &oldProtect);
+
+        memcpy((void*)address, originalBytes, instructionSize);
 
         VirtualProtect((LPVOID)address, instructionSize, oldProtect, &oldProtect);
     }

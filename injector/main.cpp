@@ -45,7 +45,9 @@ int main() {
     std::cout << "[+] Waiting for Soulstorm.exe..." << std::endl;
     while (processId == 0) {
         processId = GetProcessIdByName(targetProcessName);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (processId == 0) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
     std::cout << "[+] Found process ID: " << processId << std::endl;
 
@@ -104,18 +106,18 @@ int main() {
         system("pause");
         return 1;
     }
-    std::cout << "[+] Remote thread created! Waiting for injection to complete..." << std::endl;
-
-    // Wait for the thread to finish
-    WaitForSingleObject(hThread, INFINITE);
     std::cout << "[+] Injection completed successfully." << std::endl;
 
-    // Clean up
+    // Clean up injection handles
     VirtualFreeEx(hProcess, pRemoteString, 0, MEM_RELEASE);
     CloseHandle(hThread);
-    CloseHandle(hProcess);
 
-    std::cout << "[+] All done. Press any key to exit." << std::endl;
-    system("pause");
+    // Monitor the game process. If it closes, we exit.
+    std::cout << "[+] Monitoring game process. Injector will close automatically when the game does." << std::endl;
+    WaitForSingleObject(hProcess, INFINITE);
+
+    CloseHandle(hProcess);
+    std::cout << "[+] Game process closed. Exiting." << std::endl;
+
     return 0;
 }

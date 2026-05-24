@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <d3d9.h>
+#include <map>
 
 #include "scanner.h"
 #include "imgui.h"
@@ -23,7 +24,17 @@ bool g_uninject = false;
 bool g_showMenu = true;
 HWND g_window = nullptr;
 WNDPROC pOriginalWndProc = nullptr;
-HMODULE g_hModule = nullptr; // Handle to our own DLL
+HMODULE g_hModule = nullptr;
+
+// --- Hook Management ---
+struct HookInfo {
+    void* detourFunction;
+    uintptr_t returnAddress;
+    uintptr_t branchAddress;
+    size_t instructionSize;
+    std::vector<BYTE> originalBytes;
+};
+std::map<std::string, HookInfo> g_hooks;
 
 // --- Cheat States ---
 namespace Cheats {
@@ -42,96 +53,104 @@ namespace Cheats {
     bool all_wargear = false;
 }
 
-// --- Hook & Detour Declarations ---
-#define DECLARE_HOOK(name, aob, size) \
-    uintptr_t addr_##name = 0; \
-    uintptr_t ret_##name = 0; \
-    uintptr_t branch_##name = 0; \
-    void __declspec(naked) detour_##name()
+// --- Detour Declarations ---
+#define DECLARE_DETOUR(name) void __declspec(naked) detour_##name()
 
-// --- Hooks ---
-DECLARE_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50", 6);
-DECLARE_HOOK(InfiniteHealth, "D9 56 14 D9 E8", 5);
-DECLARE_HOOK(InfiniteResources, "D9 58 04 D9 41 08", 6);
-DECLARE_HOOK(FastBuild, "8B 48 0C 89 4F 0C", 5);
-DECLARE_HOOK(InfiniteMorale, "D9 46 08 D8 64 24 10", 7);
-DECLARE_HOOK(InfiniteCap, "8B 28 8D 4C 24 28", 6);
-DECLARE_HOOK(InstantEquipment, "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83", 6);
-DECLARE_HOOK(InstantCapture, "D9 5E 44 74 18", 5);
-DECLARE_HOOK(FastAbilities, "DB 46 78 D9 5C 24 08", 7);
-DECLARE_HOOK(RemoveFOW, "D9 81 60 0C 00 00", 6);
-DECLARE_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18", 7);
-DECLARE_HOOK(AllWargear, "83 39 00 74 03", 5);
+DECLARE_DETOUR(GetPlayerBase);
+DECLARE_DETOUR(InfiniteHealth);
+DECLARE_DETOUR(InfiniteResources);
+DECLARE_DETOUR(FastBuild);
+DECLARE_DETOUR(InfiniteMorale);
+DECLARE_DETOUR(InfiniteCap);
+DECLARE_DETOUR(InstantEquipment);
+DECLARE_DETOUR(InstantCapture);
+DECLARE_DETOUR(FastAbilities);
+DECLARE_DETOUR(RemoveFOW);
+DECLARE_DETOUR(OneHitKill);
+DECLARE_DETOUR(AllWargear);
 
 // --- Detour Implementations ---
-void __declspec(naked) detour_GetPlayerBase() { __asm { mov g_playerBase, ebx; cmp eax, [edi+0x1B8]; jmp ret_GetPlayerBase; } }
-void __declspec(naked) detour_FastBuild() { __asm { mov dword ptr [eax+0x0C], 0; jmp ret_FastBuild; } }
-void __declspec(naked) detour_InfiniteCap() { __asm { mov dword ptr [eax], 0; mov ebp, [eax]; lea ecx, [esp+0x28]; jmp ret_InfiniteCap; } }
-void __declspec(naked) detour_InstantEquipment() { __asm { mov dword ptr [eax+0x08], 0; jmp ret_InstantEquipment; } }
-void __declspec(naked) detour_FastAbilities() { __asm { mov dword ptr [esi+0x78], 0; jmp ret_FastAbilities; } }
-void __declspec(naked) detour_RemoveFOW() { __asm { mov dword ptr [ecx+0xC58], 0x3dcccccd; jmp ret_RemoveFOW; } }
-void __declspec(naked) detour_AllWargear() { __asm { nop; nop; nop; jmp ret_AllWargear; } }
+void __declspec(naked) detour_GetPlayerBase() { __asm { mov g_playerBase, ebx; cmp eax, [edi+0x1B8]; jmp g_hooks["GetPlayerBase"].returnAddress; } }
+void __declspec(naked) detour_FastBuild() { __asm { mov dword ptr [eax+0x0C], 0; jmp g_hooks["FastBuild"].returnAddress; } }
+void __declspec(naked) detour_InfiniteCap() { __asm { mov dword ptr [eax], 0; mov ebp, [eax]; lea ecx, [esp+0x28]; jmp g_hooks["InfiniteCap"].returnAddress; } }
+void __declspec(naked) detour_InstantEquipment() { __asm { mov dword ptr [eax+0x08], 0; jmp g_hooks["InstantEquipment"].returnAddress; } }
+void __declspec(naked) detour_FastAbilities() { __asm { mov dword ptr [esi+0x78], 0; jmp g_hooks["FastAbilities"].returnAddress; } }
+void __declspec(naked) detour_RemoveFOW() { __asm { mov dword ptr [ecx+0xC58], 0x3dcccccd; jmp g_hooks["RemoveFOW"].returnAddress; } }
+void __declspec(naked) detour_AllWargear() { __asm { nop; nop; nop; jmp g_hooks["AllWargear"].returnAddress; } }
 
 void __declspec(naked) detour_InfiniteHealth() {
     __asm {
-        mov ecx, [g_playerBase]
-        cmp ebp, ecx
-        jne original_code
-        mov [esi+0x14], 1
-        jmp ret_InfiniteHealth
+        __try {
+            mov ecx, [g_playerBase]
+            cmp ebp, ecx
+            jne original_code
+            mov [esi+0x14], 1
+            jmp g_hooks["InfiniteHealth"].returnAddress
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            jmp original_code
+        }
     original_code:
         fst dword ptr [esi+0x14]
         fld1
-        jmp ret_InfiniteHealth
+        jmp g_hooks["InfiniteHealth"].returnAddress
     }
 }
 
 void __declspec(naked) detour_InfiniteResources() {
     __asm {
-        cmp esi, [g_playerBase]
-        jne original_code
+        __try {
+            cmp esi, [g_playerBase]
+            jne original_code
 
-        mov dword ptr [eax], 0x49742400
-        mov dword ptr [eax+0x04], 0x49742400
-        mov dword ptr [eax+0x0C], 0x49742400
-        mov dword ptr [eax+0x10], 0x49742400
-        jmp ret_InfiniteResources
-
+            mov dword ptr [eax], 0x49742400
+            mov dword ptr [eax+0x04], 0x49742400
+            mov dword ptr [eax+0x0C], 0x49742400
+            mov dword ptr [eax+0x10], 0x49742400
+            jmp g_hooks["InfiniteResources"].returnAddress
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            jmp original_code
+        }
     original_code:
         fstp dword ptr [eax+0x04]
         fld dword ptr [ecx+0x08]
-        jmp ret_InfiniteResources
+        jmp g_hooks["InfiniteResources"].returnAddress
     }
 }
 
 void __declspec(naked) detour_InfiniteMorale() {
     __asm {
-        mov eax, [ebp+0x10]
-        cmp eax, [g_playerBase]
-        jne original_code
-        fld dword ptr [esi+0x08]
-        mov dword ptr [esi+0x08], 0x3F800000
-        jmp ret_InfiniteMorale
-
+        __try {
+            mov eax, [ebp+0x10]
+            cmp eax, [g_playerBase]
+            jne original_code
+            fld dword ptr [esi+0x08]
+            mov dword ptr [esi+0x08], 0x3F800000
+            jmp g_hooks["InfiniteMorale"].returnAddress
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            jmp original_code
+        }
     original_code:
         fld dword ptr [esi+0x08]
         fsub dword ptr [esp+0x10]
-        jmp ret_InfiniteMorale
+        jmp g_hooks["InfiniteMorale"].returnAddress
     }
 }
 
 void __declspec(naked) detour_InstantCapture() {
     __asm {
-        mov edx, [esi+0x40]
-        cmp edx, [g_playerBase]
-        jne original_code
-        mov dword ptr [esi+0x44], 0x43B40000
-        jmp ret_InstantCapture
-
+        __try {
+            mov edx, [esi+0x40]
+            cmp edx, [g_playerBase]
+            jne original_code
+            mov dword ptr [esi+0x44], 0x43B40000
+            jmp g_hooks["InstantCapture"].returnAddress
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            jmp original_code
+        }
     original_code:
         fstp dword ptr [esi+0x44]
-        je branch_InstantCapture
-        jmp ret_InstantCapture
+        je g_hooks["InstantCapture"].branchAddress
+        jmp g_hooks["InstantCapture"].returnAddress
     }
 }
 
@@ -140,7 +159,7 @@ void __declspec(naked) detour_OneHitKill() {
         fld dword ptr [esi+0x08]
         fstp dword ptr [esp+0x18]
         mov dword ptr [esi+0x08], 0x47AF0000
-        jmp ret_OneHitKill
+        jmp g_hooks["OneHitKill"].returnAddress
     }
 }
 
@@ -149,20 +168,16 @@ static int l_ToggleCheat(lua_State* L) {
     const char* name = lua_tostring(L, 1);
     bool enable = lua_toboolean(L, 2);
 
-    #define TOGGLE_JMP_HOOK(cheat, size, ...) if (strcmp(name, #cheat) == 0) { Cheats::cheat = enable; Memory::PlaceJmp(addr_##cheat, enable ? detour_##cheat : nullptr, size, &ret_##cheat, ##__VA_ARGS__); }
+    if (g_hooks.find(name) != g_hooks.end()) {
+        uintptr_t address = Memory::FindPattern(g_hooks[name].originalBytes.size() > 6 ? "WXPMod.dll" : "soulstorm.exe", (const char*)g_hooks[name].originalBytes.data());
+        if(address == 0) return 0;
 
-    TOGGLE_JMP_HOOK(infinite_health, 5);
-    TOGGLE_JMP_HOOK(infinite_resources, 6);
-    TOGGLE_JMP_HOOK(fast_build, 5);
-    TOGGLE_JMP_HOOK(infinite_morale, 7);
-    TOGGLE_JMP_HOOK(infinite_cap, 6);
-    TOGGLE_JMP_HOOK(instant_equip, 6);
-    TOGGLE_JMP_HOOK(instant_capture, 5, &branch_InstantCapture);
-    TOGGLE_JMP_HOOK(fast_abilities, 7);
-    TOGGLE_JMP_HOOK(remove_fow, 6);
-    TOGGLE_JMP_HOOK(one_hit_kill, 7);
-    TOGGLE_JMP_HOOK(all_wargear, 5);
-
+        if (enable) {
+            Memory::PlaceJmp(address, g_hooks[name].detourFunction, g_hooks[name].instructionSize, &g_hooks[name].returnAddress, &g_hooks[name].branchAddress);
+        } else {
+            Memory::RestoreJmp(address, g_hooks[name].instructionSize, g_hooks[name].originalBytes.data());
+        }
+    }
     return 0;
 }
 
@@ -213,6 +228,23 @@ long __stdcall DetourEndScene(IDirect3DDevice9* pDevice) {
     return pOriginalEndScene(pDevice);
 }
 
+void Shutdown() {
+    if (pOriginalWndProc) {
+        SetWindowLongPtr(g_window, GWLP_WNDPROC, (LONG_PTR)pOriginalWndProc);
+    }
+
+    for(auto const& [name, hook] : g_hooks) {
+        uintptr_t address = Memory::FindPattern(hook.originalBytes.size() > 6 ? "WXPMod.dll" : "soulstorm.exe", (const char*)hook.originalBytes.data());
+        if(address) Memory::RestoreJmp(address, hook.instructionSize, hook.originalBytes.data());
+    }
+
+    ImGui_ImplDX9_Shutdown();
+    ImGui_ImplWin32_Shutdown();
+    ImGui::DestroyContext();
+
+    if (g_LuaState) lua_close(g_LuaState);
+}
+
 bool LoadScriptFromResource(const char* scriptName) {
     HRSRC hRes = FindResource(g_hModule, scriptName, RT_RCDATA);
     if (!hRes) return false;
@@ -229,21 +261,26 @@ bool LoadScriptFromResource(const char* scriptName) {
 }
 
 DWORD WINAPI PayloadThread(LPVOID lpParam) {
-    // Find addresses
-    addr_GetPlayerBase = Memory::FindPattern("WXPMod.dll", "3B 87 B8 01 00 00 75 19 8B CE E8 50");
-    addr_InfiniteHealth = Memory::FindPattern("WXPMod.dll", "D9 56 14 D9 E8");
-    addr_InfiniteResources = Memory::FindPattern("WXPMod.dll", "D9 58 04 D9 41 08");
-    addr_FastBuild = Memory::FindPattern("WXPMod.dll", "8B 48 0C 89 4F 0C");
-    addr_InfiniteMorale = Memory::FindPattern("WXPMod.dll", "D9 46 08 D8 64 24 10");
-    addr_InfiniteCap = Memory::FindPattern("WXPMod.dll", "8B 28 8D 4C 24 28");
-    addr_InstantEquipment = Memory::FindPattern("WXPMod.dll", "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83");
-    addr_InstantCapture = Memory::FindPattern("WXPMod.dll", "D9 5E 44 74 18");
-    addr_FastAbilities = Memory::FindPattern("WXPMod.dll", "DB 46 78 D9 5C 24 08");
-    addr_RemoveFOW = Memory::FindPattern("soulstorm.exe", "D9 81 60 0C 00 00");
-    addr_OneHitKill = Memory::FindPattern("WXPMod.dll", "D9 46 08 D9 5C 24 18");
-    addr_AllWargear = Memory::FindPattern("WXPMod.dll", "83 39 00 74 03");
+    #define INIT_HOOK(name, pattern, size) \
+        addr_##name = Memory::FindPattern(size > 6 ? "WXPMod.dll" : "soulstorm.exe", pattern); \
+        if (addr_##name) { \
+            g_hooks[#name] = {detour_##name, 0, 0, size, {}}; \
+            g_hooks[#name].originalBytes.assign((BYTE*)addr_##name, (BYTE*)addr_##name + size); \
+        }
 
-    // Hook EndScene for drawing
+    INIT_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50", 6);
+    INIT_HOOK(InfiniteHealth, "D9 56 14 D9 E8", 5);
+    INIT_HOOK(InfiniteResources, "D9 58 04 D9 41 08", 6);
+    INIT_HOOK(FastBuild, "8B 48 0C 89 4F 0C", 5);
+    INIT_HOOK(InfiniteMorale, "D9 46 08 D8 64 24 10", 7);
+    INIT_HOOK(InfiniteCap, "8B 28 8D 4C 24 28", 6);
+    INIT_HOOK(InstantEquipment, "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83", 6);
+    INIT_HOOK(InstantCapture, "D9 5E 44 74 18", 5);
+    INIT_HOOK(FastAbilities, "DB 46 78 D9 5C 24 08", 7);
+    INIT_HOOK(RemoveFOW, "D9 81 60 0C 00 00", 6);
+    INIT_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18", 7);
+    INIT_HOOK(AllWargear, "83 39 00 74 03", 5);
+
     HWND window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
     IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
     D3DPRESENT_PARAMETERS d3dpp = {};
@@ -283,12 +320,7 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
         Sleep(100);
     }
 
-    Beep(500, 300);
-    SetWindowLongPtr(g_window, GWLP_WNDPROC, (LONG_PTR)pOriginalWndProc);
-    MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
-    lua_close(g_LuaState);
-
+    Shutdown();
     FreeLibraryAndExitThread((HMODULE)lpParam, 0);
     return 0;
 }
@@ -298,6 +330,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
         CreateThread(nullptr, 0, PayloadThread, hModule, 0, nullptr);
+    } else if (ul_reason_for_call == DLL_PROCESS_DETACH) {
+        Shutdown();
     }
     return TRUE;
 }
