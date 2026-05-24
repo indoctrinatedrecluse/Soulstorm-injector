@@ -1,0 +1,38 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on tags like v1.0, v1.0.0, etc.
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Configure CMake
+      # We specify the Visual Studio generator and explicitly set the architecture to Win32 (x86)
+      run: cmake -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A Win32
+
+    - name: Build
+      # Build the project in Release configuration
+      run: cmake --build ${{github.workspace}}/build --config Release
+
+    - name: Package Release Artifacts
+      # Create a zip file containing the necessary files for the release
+      run: |
+        $zipFile = "Soulstorm-Injector-${{ github.ref_name }}.zip"
+        Compress-Archive -Path ${{github.workspace}}/build/injector/Release/injector.exe, ${{github.workspace}}/build/payload/Release/payload.dll -DestinationPath $zipFile
+        echo "RELEASE_ZIP_PATH=$zipFile" >> $env:GITHUB_ENV
+      shell: pwsh
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{ env.RELEASE_ZIP_PATH }}
+        # The release will be named after the tag (e.g., "v1.0.0")
+        # It will be marked as a pre-release until you manually edit it.
+        prerelease: true
