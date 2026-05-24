@@ -8,6 +8,10 @@ on:
 jobs:
   build-and-release:
     runs-on: windows-latest
+    
+    # Grant the action permission to create releases
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout repository

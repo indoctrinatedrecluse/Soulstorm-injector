@@ -1,3 +1,7 @@
+# v1.1.3
+
+- Fixed GitHub Actions release failure by granting `contents: write` permissions to the build job, allowing the action to create releases.
+
 # v1.1.2
 
 - Fixed `LNK1181` linker error by manually defining the `minhook` library target in CMake, as the upstream project lacks a root `CMakeLists.txt`.
