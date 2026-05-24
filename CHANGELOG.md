@@ -1,3 +1,8 @@
+# v1.1.1
+
+- Fixed CMake deprecation warnings by replacing `FetchContent_Populate` with the modern `FetchContent_MakeAvailable` command for Lua and ImGui dependencies.
+- Corrected missing include directories for MinHook, resolving the `MinHook.h: No such file or directory` build error.
+
 # v1.1.0
 
 - Reverted to MinHook for robust and reliable function hooking.
