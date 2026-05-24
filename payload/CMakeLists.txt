@@ -11,6 +11,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(minhook)
 
+# MinHook does not have a CMakeLists.txt in its root directory,
+# so we must compile its source files manually.
+file(GLOB MINHOOK_SOURCES "${minhook_SOURCE_DIR}/src/*.c" "${minhook_SOURCE_DIR}/src/hde/*.c")
+add_library(minhook STATIC ${MINHOOK_SOURCES})
+target_include_directories(minhook PUBLIC "${minhook_SOURCE_DIR}/include")
+
+
 # --- Lua for scripting ---
 FetchContent_Declare(
     lua
@@ -63,8 +70,8 @@ endforeach()
 # --- Main Payload DLL ---
 add_library(payload SHARED dllmain.cpp scanner.cpp scanner.h ${LUA_SCRIPTS} ${RESOURCE_FILE})
 
-# Link all libraries (Added psapi for GetModuleInformation in scanner.cpp)
-target_link_libraries(payload PRIVATE MinHook lua_static imgui psapi)
+# Link all libraries
+target_link_libraries(payload PRIVATE minhook lua_static imgui psapi)
 
 # Add include directories for all dependencies
 target_include_directories(payload PRIVATE

@@ -1,6 +1,6 @@
 # v1.1.2
 
-- Fixed `LNK1181` linker error by correcting the case of the MinHook library name in `target_link_libraries`.
+- Fixed `LNK1181` linker error by manually defining the `minhook` library target in CMake, as the upstream project lacks a root `CMakeLists.txt`.
 - Fixed CMake deprecation warnings by replacing `FetchContent_Populate` with the modern `FetchContent_MakeAvailable` command.
 - Added `psapi` to linked libraries to resolve potential `GetModuleInformation` unresolved external symbol errors.
 
