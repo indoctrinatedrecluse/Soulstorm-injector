@@ -2,12 +2,14 @@
 #include <string>
 #include <vector>
 #include <d3d9.h>
+#include <map>
 #include <fstream>
 #include <chrono>
 #include <iomanip>
-#include <dbghelp.h> // For crash dumps
+#include <dbghelp.h>
 
 #include "scanner.h"
+#include "seh_helpers.h"
 #include "MinHook.h"
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -141,13 +143,7 @@ void __fastcall DetourHealthUpdate(void* ecx, void* edx, float damage) {
     uintptr_t entityOwner = 0;
     __asm { mov entityOwner, esi }
 
-    __try {
-        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) == g_playerBase) {
-            return;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception caught in DetourHealthUpdate");
-    }
+    if (IsPlayerEntity(entityOwner, g_playerBase)) return;
 
     pOrigHealthUpdate(ecx, edx, damage);
 }
@@ -156,17 +152,13 @@ void __fastcall DetourResourceUpdate(void* ecx, void* edx, void* resource_struct
     uintptr_t resourceOwner = 0;
     __asm { mov resourceOwner, esi }
 
-    __try {
-        if (resourceOwner == g_playerBase) {
-            if (Cheats::infinite_resources) {
-                *(float*)((uintptr_t)ecx + 0x00) = 99999.0f; // Req
-                *(float*)((uintptr_t)ecx + 0x04) = 99999.0f; // Power
-            }
-            if (Cheats::infinite_faith) *(float*)((uintptr_t)ecx + 0x0C) = 99999.0f;
-            if (Cheats::infinite_souls) *(float*)((uintptr_t)ecx + 0x10) = 99999.0f;
+    if (IsPlayerResource(resourceOwner, g_playerBase)) {
+        if (Cheats::infinite_resources) {
+            *(float*)((uintptr_t)ecx + 0x00) = 99999.0f; // Req
+            *(float*)((uintptr_t)ecx + 0x04) = 99999.0f; // Power
         }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception caught in DetourResourceUpdate");
+        if (Cheats::infinite_faith) *(float*)((uintptr_t)ecx + 0x0C) = 99999.0f;
+        if (Cheats::infinite_souls) *(float*)((uintptr_t)ecx + 0x10) = 99999.0f;
     }
 
     pOrigResourceUpdate(ecx, edx, resource_struct);
@@ -181,13 +173,11 @@ void __fastcall DetourMoraleUpdate(void* ecx, void* edx, void* esp_plus_10) {
     uintptr_t entityOwner = 0;
     __asm { mov entityOwner, ebp }
 
-    __try {
-        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x10) == g_playerBase) {
+    if (IsPlayerMorale(entityOwner, g_playerBase)) {
+        __try {
             *(float*)((uintptr_t)ecx + 0x08) = 1.0f;
-            return;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception caught in DetourMoraleUpdate");
+        } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourMoraleUpdate"); }
+        return;
     }
 
     pOrigMoraleUpdate(ecx, edx, esp_plus_10);
@@ -209,16 +199,15 @@ void __fastcall DetourFogOfWarUpdate(void* ecx, void* edx) {
 }
 
 void __fastcall DetourOneHitKill(void* ecx, void* edx, void* arg1) {
-     uintptr_t entityOwner = 0;
+    uintptr_t entityOwner = 0;
     __asm { mov entityOwner, esi }
 
-    __try {
-        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) != g_playerBase) {
+    if (!IsPlayerEntity(entityOwner, g_playerBase)) {
+        __try {
             *(float*)((uintptr_t)ecx + 0x08) = 90000.0f;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception caught in DetourOneHitKill");
+        } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourOneHitKill"); }
     }
+
     pOrigOneHitKill(ecx, edx, arg1);
 }
 
@@ -226,13 +215,12 @@ void __fastcall DetourInstantCapture(void* ecx, void* edx) {
     uintptr_t entityOwner = 0;
     __asm { mov entityOwner, esi }
 
-    __try {
-        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) == g_playerBase) {
+    if (IsPlayerEntity(entityOwner, g_playerBase)) {
+         __try {
             *(float*)((uintptr_t)ecx + 0x44) = 360.0f;
-        }
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        Log("Exception caught in DetourInstantCapture");
+         } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourInstantCapture"); }
     }
+
     pOrigInstantCapture(ecx, edx);
 }
 
@@ -242,7 +230,7 @@ void __fastcall DetourFastAbilities(void* ecx, void* edx) {
 }
 
 void __fastcall DetourAllWargear(void* ecx, void* edx) {
-    pOrigAllWargear(ecx, edx); // Just call original, actual cheat logic is more complex and might need Lua scripting
+    pOrigAllWargear(ecx, edx);
 }
 
 // --- Lua Bridge ---
@@ -459,7 +447,7 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     INIT_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18", 7);
     INIT_HOOK(AllWargear, "83 39 00 74 03", 5);
 
-    Log("Creating dummy D3D9 device for hooking EndScene...");
+    // Skip DirectX init block to avoid scope errors
     HWND window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
     if (!window) {
          Log("ERROR: W40kWindow not found. Cannot hook DirectX.");
@@ -473,11 +461,12 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
         goto cleanup_and_exit;
     }
 
-    D3DPRESENT_PARAMETERS d3dpp = {};
+    D3DPRESENT_PARAMETERS d3dpp;
+    ZeroMemory(&d3dpp, sizeof(d3dpp));
     d3dpp.Windowed = TRUE;
     d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    IDirect3DDevice9* pDummyDevice;
-    pDummyDevice = nullptr;
+
+    IDirect3DDevice9* pDummyDevice = nullptr;
     if(FAILED(pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
          Log("ERROR: CreateDevice failed.");
          pD3D->Release();
@@ -535,6 +524,9 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     lua_register(g_LuaState, "ImGui_Checkbox", l_ImGui_Checkbox);
     lua_register(g_LuaState, "ImGui_Begin", l_ImGui_Begin);
     lua_register(g_LuaState, "ImGui_End", l_ImGui_End);
+
+    lua_pushnumber(g_LuaState, g_playerBase);
+    lua_setglobal(g_LuaState, "playerBase");
 
     if (!LoadScriptFromResource("main") || !LoadScriptFromResource("cheats")) {
         Log("Failed to load embedded Lua scripts.");

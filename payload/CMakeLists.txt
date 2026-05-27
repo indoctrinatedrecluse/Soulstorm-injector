@@ -68,7 +68,7 @@ foreach(script ${LUA_SCRIPTS})
 endforeach()
 
 # --- Main Payload DLL ---
-add_library(payload SHARED dllmain.cpp scanner.cpp scanner.h ${LUA_SCRIPTS} ${RESOURCE_FILE})
+add_library(payload SHARED dllmain.cpp scanner.cpp scanner.h seh_helpers.cpp seh_helpers.h ${LUA_SCRIPTS} ${RESOURCE_FILE})
 
 # Link all libraries
 target_link_libraries(payload PRIVATE MinHook lua_static imgui psapi dbghelp)
