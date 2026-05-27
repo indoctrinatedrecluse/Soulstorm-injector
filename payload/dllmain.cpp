@@ -2,17 +2,19 @@
 #include <string>
 #include <vector>
 #include <d3d9.h>
-#include <map>
 #include <fstream>
 #include <chrono>
 #include <iomanip>
+#include <dbghelp.h> // For crash dumps
 
 #include "scanner.h"
+#include "MinHook.h"
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
 
 #pragma comment(lib, "d3d9.lib")
+#pragma comment(lib, "dbghelp.lib")
 
 extern "C" {
 #include "lua.h"
@@ -26,7 +28,6 @@ lua_State* g_LuaState = nullptr;
 bool g_uninject = false;
 bool g_showMenu = true;
 HWND g_window = nullptr;
-WNDPROC pOriginalWndProc = nullptr;
 HMODULE g_hModule = nullptr;
 
 // --- Logging Setup ---
@@ -48,274 +49,255 @@ void Log(const std::string& message) {
     }
 }
 
-// --- Hook Management ---
-struct HookInfo {
-    void* detourFunction;
-    uintptr_t returnAddress;
-    uintptr_t branchAddress;
-    size_t instructionSize;
-    std::vector<BYTE> originalBytes;
-};
-std::map<std::string, HookInfo> g_hooks;
+// --- Crash Handler ---
+LONG WINAPI UnhandledExceptionHandler(EXCEPTION_POINTERS* pExceptionInfo) {
+    Log("CRITICAL ERROR: Unhandled Exception Caught!");
+
+    char dumpPath[MAX_PATH];
+    GetModuleFileNameA(g_hModule, dumpPath, MAX_PATH);
+    std::string strDumpPath(dumpPath);
+    strDumpPath = strDumpPath.substr(0, strDumpPath.find_last_of("\\/")) + "\\crash.dmp";
+
+    HANDLE hFile = CreateFileA(strDumpPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        MINIDUMP_EXCEPTION_INFORMATION dumpInfo;
+        dumpInfo.ThreadId = GetCurrentThreadId();
+        dumpInfo.ExceptionPointers = pExceptionInfo;
+        dumpInfo.ClientPointers = FALSE;
+
+        MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &dumpInfo, NULL, NULL);
+        CloseHandle(hFile);
+        Log("Crash dump saved to: " + strDumpPath);
+    } else {
+        Log("Failed to create crash dump file.");
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// --- Function Pointers ---
+typedef LRESULT(CALLBACK* WNDPROC)(HWND, UINT, WPARAM, LPARAM);
+WNDPROC pOriginalWndProc = nullptr;
+
+typedef long(__stdcall* EndScene_t)(IDirect3DDevice9* pDevice);
+EndScene_t pOriginalEndScene = nullptr;
+
+// --- Hook Function Typedefs ---
+typedef int(__fastcall* GetPlayerBase_t)(void* ecx, void* edx, void* arg1);
+typedef void(__fastcall* HealthUpdate_t)(void* ecx, void* edx, float damage);
+typedef void(__fastcall* ResourceUpdate_t)(void* ecx, void* edx, void* resource_struct);
+typedef void(__fastcall* BuildTimeUpdate_t)(void* ecx, void* edx, void* build_struct);
+typedef void(__fastcall* MoraleUpdate_t)(void* ecx, void* edx, void* esp_plus_10);
+typedef void(__fastcall* SquadCapUpdate_t)(void* ecx, void* edx);
+typedef void(__fastcall* EquipTimeUpdate_t)(void* ecx, void* edx);
+typedef void(__fastcall* FogOfWarUpdate_t)(void* ecx, void* edx);
+typedef void(__fastcall* OneHitKill_t)(void* ecx, void* edx, void* arg1);
+typedef void(__fastcall* InstantCapture_t)(void* ecx, void* edx);
+typedef void(__fastcall* FastAbilities_t)(void* ecx, void* edx);
+typedef void(__fastcall* AllWargear_t)(void* ecx, void* edx);
+
+// --- Original Pointers ---
+GetPlayerBase_t pOrigGetPlayerBase = nullptr;
+HealthUpdate_t pOrigHealthUpdate = nullptr;
+ResourceUpdate_t pOrigResourceUpdate = nullptr;
+BuildTimeUpdate_t pOrigBuildTimeUpdate = nullptr;
+MoraleUpdate_t pOrigMoraleUpdate = nullptr;
+SquadCapUpdate_t pOrigSquadCapUpdate = nullptr;
+EquipTimeUpdate_t pOrigEquipTimeUpdate = nullptr;
+FogOfWarUpdate_t pOrigFogOfWarUpdate = nullptr;
+OneHitKill_t pOrigOneHitKill = nullptr;
+InstantCapture_t pOrigInstantCapture = nullptr;
+FastAbilities_t pOrigFastAbilities = nullptr;
+AllWargear_t pOrigAllWargear = nullptr;
+
+// --- Hook Addresses ---
+uintptr_t addr_GetPlayerBase = 0;
+uintptr_t addr_InfiniteHealth = 0;
+uintptr_t addr_InfiniteResources = 0;
+uintptr_t addr_FastBuild = 0;
+uintptr_t addr_InfiniteMorale = 0;
+uintptr_t addr_InfiniteCap = 0;
+uintptr_t addr_InstantEquipment = 0;
+uintptr_t addr_RemoveFOW = 0;
+uintptr_t addr_OneHitKill = 0;
+uintptr_t addr_InstantCapture = 0;
+uintptr_t addr_FastAbilities = 0;
+uintptr_t addr_AllWargear = 0;
 
 // --- Cheat States ---
 namespace Cheats {
-    bool infinite_health = false;
     bool infinite_resources = false;
     bool infinite_faith = false;
     bool infinite_souls = false;
-    bool fast_build = false;
-    bool infinite_morale = false;
-    bool infinite_cap = false;
-    bool instant_equip = false;
-    bool remove_fow = false;
-    bool one_hit_kill = false;
-    bool instant_capture = false;
-    bool fast_abilities = false;
-    bool all_wargear = false;
 }
 
-// --- Hook Targets ---
-uintptr_t addr_GetPlayerBase = 0;
-uintptr_t ret_GetPlayerBase = 0;
-uintptr_t branch_GetPlayerBase = 0;
-
-uintptr_t addr_InfiniteHealth = 0;
-uintptr_t ret_InfiniteHealth = 0;
-uintptr_t branch_InfiniteHealth = 0;
-
-uintptr_t addr_InfiniteResources = 0;
-uintptr_t ret_InfiniteResources = 0;
-uintptr_t branch_InfiniteResources = 0;
-
-uintptr_t addr_FastBuild = 0;
-uintptr_t ret_FastBuild = 0;
-uintptr_t branch_FastBuild = 0;
-
-uintptr_t addr_InfiniteMorale = 0;
-uintptr_t ret_InfiniteMorale = 0;
-uintptr_t branch_InfiniteMorale = 0;
-
-uintptr_t addr_InfiniteCap = 0;
-uintptr_t ret_InfiniteCap = 0;
-uintptr_t branch_InfiniteCap = 0;
-
-uintptr_t addr_InstantEquipment = 0;
-uintptr_t ret_InstantEquipment = 0;
-uintptr_t branch_InstantEquipment = 0;
-
-uintptr_t addr_InstantCapture = 0;
-uintptr_t ret_InstantCapture = 0;
-uintptr_t branch_InstantCapture = 0;
-
-uintptr_t addr_FastAbilities = 0;
-uintptr_t ret_FastAbilities = 0;
-uintptr_t branch_FastAbilities = 0;
-
-uintptr_t addr_RemoveFOW = 0;
-uintptr_t ret_RemoveFOW = 0;
-uintptr_t branch_RemoveFOW = 0;
-
-uintptr_t addr_OneHitKill = 0;
-uintptr_t ret_OneHitKill = 0;
-uintptr_t branch_OneHitKill = 0;
-
-uintptr_t addr_AllWargear = 0;
-uintptr_t ret_AllWargear = 0;
-uintptr_t branch_AllWargear = 0;
-
-// --- Detour Implementations ---
-void __declspec(naked) detour_GetPlayerBase() {
-    __asm {
-        mov g_playerBase, ebx
-        cmp eax, [edi+0x1B8]
-        jmp [ret_GetPlayerBase]
-    }
+// --- Detours ---
+int __fastcall DetourGetPlayerBase(void* ecx, void* edx, void* arg1) {
+    __asm { mov g_playerBase, ebx }
+    return pOrigGetPlayerBase(ecx, edx, arg1);
 }
 
-void __declspec(naked) detour_FastBuild() {
-    __asm {
-        __try {
-            mov dword ptr [eax+0x0C], 0
-            jmp [ret_FastBuild]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-             jmp [ret_FastBuild]
+void __fastcall DetourHealthUpdate(void* ecx, void* edx, float damage) {
+    uintptr_t entityOwner = 0;
+    __asm { mov entityOwner, esi }
+
+    __try {
+        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) == g_playerBase) {
+            return;
         }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Exception caught in DetourHealthUpdate");
     }
+
+    pOrigHealthUpdate(ecx, edx, damage);
 }
 
-void __declspec(naked) detour_InfiniteCap() {
-    __asm {
-         __try {
-            mov dword ptr [eax], 0
-            mov ebp, [eax]
-            lea ecx, [esp+0x28]
-            jmp [ret_InfiniteCap]
-         } __except (EXCEPTION_EXECUTE_HANDLER) {
-             jmp [ret_InfiniteCap]
-         }
-    }
-}
+void __fastcall DetourResourceUpdate(void* ecx, void* edx, void* resource_struct) {
+    uintptr_t resourceOwner = 0;
+    __asm { mov resourceOwner, esi }
 
-void __declspec(naked) detour_InstantEquipment() {
-    __asm {
-         __try {
-            mov dword ptr [eax+0x08], 0
-            jmp [ret_InstantEquipment]
-         } __except (EXCEPTION_EXECUTE_HANDLER) {
-             jmp [ret_InstantEquipment]
-         }
-    }
-}
-
-void __declspec(naked) detour_FastAbilities() {
-    __asm {
-         __try {
-            mov dword ptr [esi+0x78], 0
-            jmp [ret_FastAbilities]
-         } __except (EXCEPTION_EXECUTE_HANDLER) {
-             jmp [ret_FastAbilities]
-         }
-    }
-}
-
-void __declspec(naked) detour_RemoveFOW() {
-    __asm {
-         __try {
-            mov dword ptr [ecx+0xC58], 0x3dcccccd
-            jmp [ret_RemoveFOW]
-         } __except (EXCEPTION_EXECUTE_HANDLER) {
-             jmp [ret_RemoveFOW]
-         }
-    }
-}
-
-void __declspec(naked) detour_AllWargear() {
-    __asm {
-        nop
-        nop
-        nop
-        jmp [ret_AllWargear]
-    }
-}
-
-void __declspec(naked) detour_InfiniteHealth() {
-    __asm {
-        __try {
-            mov ecx, [g_playerBase]
-            cmp ebp, ecx
-            jne orig_InfiniteHealth
-            mov [esi+0x14], 1
-            jmp [ret_InfiniteHealth]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            jmp orig_InfiniteHealth
+    __try {
+        if (resourceOwner == g_playerBase) {
+            if (Cheats::infinite_resources) {
+                *(float*)((uintptr_t)ecx + 0x00) = 99999.0f; // Req
+                *(float*)((uintptr_t)ecx + 0x04) = 99999.0f; // Power
+            }
+            if (Cheats::infinite_faith) *(float*)((uintptr_t)ecx + 0x0C) = 99999.0f;
+            if (Cheats::infinite_souls) *(float*)((uintptr_t)ecx + 0x10) = 99999.0f;
         }
-    orig_InfiniteHealth:
-        fst dword ptr [esi+0x14]
-        fld1
-        jmp [ret_InfiniteHealth]
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Exception caught in DetourResourceUpdate");
     }
+
+    pOrigResourceUpdate(ecx, edx, resource_struct);
 }
 
-void __declspec(naked) detour_InfiniteResources() {
-    __asm {
-        __try {
-            cmp esi, [g_playerBase]
-            jne orig_InfiniteResources
-
-            mov dword ptr [eax], 0x49742400
-            mov dword ptr [eax+0x04], 0x49742400
-            mov dword ptr [eax+0x0C], 0x49742400
-            mov dword ptr [eax+0x10], 0x49742400
-            jmp [ret_InfiniteResources]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            jmp orig_InfiniteResources
-        }
-    orig_InfiniteResources:
-        fstp dword ptr [eax+0x04]
-        fld dword ptr [ecx+0x08]
-        jmp [ret_InfiniteResources]
-    }
+void __fastcall DetourBuildTimeUpdate(void* ecx, void* edx, void* build_struct) {
+    __try { *(float*)((uintptr_t)ecx + 0x0C) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourBuildTimeUpdate"); }
+    pOrigBuildTimeUpdate(ecx, edx, build_struct);
 }
 
-void __declspec(naked) detour_InfiniteMorale() {
-    __asm {
-        __try {
-            mov eax, [ebp+0x10]
-            cmp eax, [g_playerBase]
-            jne orig_InfiniteMorale
-            fld dword ptr [esi+0x08]
-            mov dword ptr [esi+0x08], 0x3F800000
-            jmp [ret_InfiniteMorale]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            jmp orig_InfiniteMorale
+void __fastcall DetourMoraleUpdate(void* ecx, void* edx, void* esp_plus_10) {
+    uintptr_t entityOwner = 0;
+    __asm { mov entityOwner, ebp }
+
+    __try {
+        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x10) == g_playerBase) {
+            *(float*)((uintptr_t)ecx + 0x08) = 1.0f;
+            return;
         }
-    orig_InfiniteMorale:
-        fld dword ptr [esi+0x08]
-        fsub dword ptr [esp+0x10]
-        jmp [ret_InfiniteMorale]
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Exception caught in DetourMoraleUpdate");
     }
+
+    pOrigMoraleUpdate(ecx, edx, esp_plus_10);
 }
 
-void __declspec(naked) detour_InstantCapture() {
-    __asm {
-        __try {
-            mov edx, [esi+0x40]
-            cmp edx, [g_playerBase]
-            jne orig_InstantCapture
-            mov dword ptr [esi+0x44], 0x43B40000
-            jmp [ret_InstantCapture]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            jmp orig_InstantCapture
-        }
-    orig_InstantCapture:
-        fstp dword ptr [esi+0x44]
-        je branch_InstantCapture_jump
-        jmp [ret_InstantCapture]
-    branch_InstantCapture_jump:
-        jmp [branch_InstantCapture]
-    }
+void __fastcall DetourSquadCapUpdate(void* ecx, void* edx) {
+    __try { *(float*)ecx = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourSquadCapUpdate"); }
+    pOrigSquadCapUpdate(ecx, edx);
 }
 
-void __declspec(naked) detour_OneHitKill() {
-    __asm {
-        __try {
-            fld dword ptr [esi+0x08]
-            fstp dword ptr [esp+0x18]
-            mov dword ptr [esi+0x08], 0x47AF0000
-            jmp [ret_OneHitKill]
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            jmp [ret_OneHitKill]
+void __fastcall DetourEquipTimeUpdate(void* ecx, void* edx) {
+    __try { *(float*)((uintptr_t)ecx + 0x08) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourEquipTimeUpdate"); }
+    pOrigEquipTimeUpdate(ecx, edx);
+}
+
+void __fastcall DetourFogOfWarUpdate(void* ecx, void* edx) {
+    __try { *(float*)((uintptr_t)ecx + 0xC58) = 0.1f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourFogOfWarUpdate"); }
+    pOrigFogOfWarUpdate(ecx, edx);
+}
+
+void __fastcall DetourOneHitKill(void* ecx, void* edx, void* arg1) {
+     uintptr_t entityOwner = 0;
+    __asm { mov entityOwner, esi }
+
+    __try {
+        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) != g_playerBase) {
+            *(float*)((uintptr_t)ecx + 0x08) = 90000.0f;
         }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Exception caught in DetourOneHitKill");
     }
+    pOrigOneHitKill(ecx, edx, arg1);
+}
+
+void __fastcall DetourInstantCapture(void* ecx, void* edx) {
+    uintptr_t entityOwner = 0;
+    __asm { mov entityOwner, esi }
+
+    __try {
+        if (entityOwner != 0 && *(uintptr_t*)(entityOwner + 0x40) == g_playerBase) {
+            *(float*)((uintptr_t)ecx + 0x44) = 360.0f;
+        }
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        Log("Exception caught in DetourInstantCapture");
+    }
+    pOrigInstantCapture(ecx, edx);
+}
+
+void __fastcall DetourFastAbilities(void* ecx, void* edx) {
+     __try { *(float*)((uintptr_t)ecx + 0x78) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourFastAbilities"); }
+     pOrigFastAbilities(ecx, edx);
+}
+
+void __fastcall DetourAllWargear(void* ecx, void* edx) {
+    pOrigAllWargear(ecx, edx); // Just call original, actual cheat logic is more complex and might need Lua scripting
 }
 
 // --- Lua Bridge ---
+void ToggleHook(uintptr_t address, void* detour, void** original, bool enable, const char* name) {
+    if (address == 0) {
+        Log(std::string("Failed to toggle ") + name + ": Address is 0 (Pattern not found).");
+        return;
+    }
+
+    if (enable) {
+        if (*original == nullptr) {
+            if (MH_CreateHook((LPVOID)address, detour, original) != MH_OK) {
+                Log(std::string("Failed to create hook for ") + name);
+                return;
+            }
+        }
+        if (MH_EnableHook((LPVOID)address) == MH_OK) {
+            Log(std::string("Enabled hook for ") + name);
+            Beep(600, 100);
+        } else {
+             Log(std::string("Failed to enable hook for ") + name);
+        }
+    } else {
+        if (MH_DisableHook((LPVOID)address) == MH_OK) {
+             Log(std::string("Disabled hook for ") + name);
+             Beep(400, 100);
+        } else {
+             Log(std::string("Failed to disable hook for ") + name);
+        }
+    }
+}
+
 static int l_ToggleCheat(lua_State* L) {
     const char* name = lua_tostring(L, 1);
     bool enable = lua_toboolean(L, 2);
 
     Log(std::string("Lua requested toggle: ") + name + " -> " + (enable ? "ON" : "OFF"));
 
-    if (g_hooks.find(name) != g_hooks.end()) {
-        uintptr_t address = Memory::FindPattern(g_hooks[name].originalBytes.size() > 6 ? "WXPMod.dll" : "soulstorm.exe", (const char*)g_hooks[name].originalBytes.data());
-        if(address == 0) {
-            Log(std::string("Failed to toggle cheat ") + name + ": AOB pattern not found in memory.");
-            return 0;
-        }
-
-        if (enable) {
-            Log(std::string("Placing JMP hook for ") + name + " at 0x" + std::to_string(address));
-            Memory::PlaceJmp(address, g_hooks[name].detourFunction, g_hooks[name].instructionSize, &g_hooks[name].returnAddress, &g_hooks[name].branchAddress);
-            Beep(600, 100);
-        } else {
-            Log(std::string("Restoring original bytes for ") + name + " at 0x" + std::to_string(address));
-            Memory::RestoreJmp(address, g_hooks[name].instructionSize, g_hooks[name].originalBytes.data());
-            Beep(400, 100);
-        }
-    } else {
-        Log(std::string("Cheat '") + name + "' not found in hook dictionary.");
+    if (strcmp(name, "infinite_health") == 0) ToggleHook(addr_InfiniteHealth, DetourHealthUpdate, (void**)&pOrigHealthUpdate, enable, name);
+    else if (strcmp(name, "infinite_resources") == 0) { Cheats::infinite_resources = enable; ToggleHook(addr_InfiniteResources, DetourResourceUpdate, (void**)&pOrigResourceUpdate, enable || Cheats::infinite_faith || Cheats::infinite_souls, "infinite_resources (shared)"); }
+    else if (strcmp(name, "infinite_faith") == 0) { Cheats::infinite_faith = enable; ToggleHook(addr_InfiniteResources, DetourResourceUpdate, (void**)&pOrigResourceUpdate, enable || Cheats::infinite_resources || Cheats::infinite_souls, "infinite_faith (shared)"); }
+    else if (strcmp(name, "infinite_souls") == 0) { Cheats::infinite_souls = enable; ToggleHook(addr_InfiniteResources, DetourResourceUpdate, (void**)&pOrigResourceUpdate, enable || Cheats::infinite_resources || Cheats::infinite_faith, "infinite_souls (shared)"); }
+    else if (strcmp(name, "fast_build") == 0) ToggleHook(addr_FastBuild, DetourBuildTimeUpdate, (void**)&pOrigBuildTimeUpdate, enable, name);
+    else if (strcmp(name, "infinite_morale") == 0) ToggleHook(addr_InfiniteMorale, DetourMoraleUpdate, (void**)&pOrigMoraleUpdate, enable, name);
+    else if (strcmp(name, "infinite_cap") == 0) ToggleHook(addr_InfiniteCap, DetourSquadCapUpdate, (void**)&pOrigSquadCapUpdate, enable, name);
+    else if (strcmp(name, "instant_equip") == 0) ToggleHook(addr_InstantEquipment, DetourEquipTimeUpdate, (void**)&pOrigEquipTimeUpdate, enable, name);
+    else if (strcmp(name, "instant_capture") == 0) ToggleHook(addr_InstantCapture, DetourInstantCapture, (void**)&pOrigInstantCapture, enable, name);
+    else if (strcmp(name, "fast_abilities") == 0) ToggleHook(addr_FastAbilities, DetourFastAbilities, (void**)&pOrigFastAbilities, enable, name);
+    else if (strcmp(name, "remove_fow") == 0) ToggleHook(addr_RemoveFOW, DetourFogOfWarUpdate, (void**)&pOrigFogOfWarUpdate, enable, name);
+    else if (strcmp(name, "one_hit_kill") == 0) ToggleHook(addr_OneHitKill, DetourOneHitKill, (void**)&pOrigOneHitKill, enable, name);
+    else if (strcmp(name, "all_wargear") == 0) ToggleHook(addr_AllWargear, DetourAllWargear, (void**)&pOrigAllWargear, enable, name);
+    else {
+        Log(std::string("Unknown cheat requested: ") + name);
     }
+
     return 0;
 }
 
@@ -333,9 +315,6 @@ static int l_ImGui_Begin(lua_State* L) { ImGui::Begin(lua_tostring(L, 1)); retur
 static int l_ImGui_End(lua_State* L) { ImGui::End(); return 0; }
 
 // --- DirectX & ImGui ---
-typedef long(__stdcall* EndScene_t)(IDirect3DDevice9* pDevice);
-EndScene_t pOriginalEndScene = nullptr;
-
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK DetourWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (g_showMenu && ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam)) return true;
@@ -388,13 +367,9 @@ void Shutdown() {
         Log("Restored original WndProc.");
     }
 
-    for(auto const& [name, hook] : g_hooks) {
-        uintptr_t address = Memory::FindPattern(hook.originalBytes.size() > 6 ? "WXPMod.dll" : "soulstorm.exe", (const char*)hook.originalBytes.data());
-        if(address) {
-             Memory::RestoreJmp(address, hook.instructionSize, hook.originalBytes.data());
-             Log("Restored bytes for hook: " + name);
-        }
-    }
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
+    Log("Uninitialized MinHook.");
 
     ImGui_ImplDX9_Shutdown();
     ImGui_ImplWin32_Shutdown();
@@ -406,7 +381,10 @@ void Shutdown() {
         Log("Lua state closed.");
     }
 
-    if (g_logFile.is_open()) g_logFile.close();
+    if (g_logFile.is_open()) {
+        Log("Closing log file.");
+        g_logFile.close();
+    }
 }
 
 bool LoadScriptFromResource(const char* scriptName) {
@@ -437,9 +415,10 @@ bool LoadScriptFromResource(const char* scriptName) {
     return false;
 }
 
-#include "MinHook.h"
-
 DWORD WINAPI PayloadThread(LPVOID lpParam) {
+    // Set up crash handling
+    SetUnhandledExceptionFilter(UnhandledExceptionHandler);
+
     char logPath[MAX_PATH];
     GetModuleFileNameA(g_hModule, logPath, MAX_PATH);
     std::string strLogPath(logPath);
@@ -463,10 +442,8 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
         addr_##name = Memory::FindPattern(size > 6 ? "WXPMod.dll" : "soulstorm.exe", pattern); \
         if (addr_##name) { \
             Log("Found " #name " at 0x" + std::to_string(addr_##name)); \
-            g_hooks[#name] = {detour_##name, 0, 0, size, {}}; \
-            g_hooks[#name].originalBytes.assign((BYTE*)addr_##name, (BYTE*)addr_##name + size); \
         } else { \
-            Log("Failed to find " #name); \
+            Log("WARNING: Failed to find " #name); \
         }
 
     INIT_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50", 6);
@@ -529,8 +506,12 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     }
 
     if (addr_GetPlayerBase) {
-        Memory::PlaceJmp(addr_GetPlayerBase, detour_GetPlayerBase, 6, &ret_GetPlayerBase);
-        Log("Placed initial JMP for GetPlayerBase.");
+        if (MH_CreateHook((LPVOID)addr_GetPlayerBase, &DetourGetPlayerBase, (LPVOID*)&pOrigGetPlayerBase) == MH_OK) {
+            MH_EnableHook((LPVOID)addr_GetPlayerBase);
+            Log("Placed initial MinHook for GetPlayerBase.");
+        } else {
+             Log("ERROR: Failed to hook GetPlayerBase.");
+        }
     } else {
         Log("WARNING: GetPlayerBase address is 0. Cheats relying on player detection will not work.");
     }
@@ -554,9 +535,6 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     lua_register(g_LuaState, "ImGui_Checkbox", l_ImGui_Checkbox);
     lua_register(g_LuaState, "ImGui_Begin", l_ImGui_Begin);
     lua_register(g_LuaState, "ImGui_End", l_ImGui_End);
-
-    lua_pushnumber(g_LuaState, g_playerBase);
-    lua_setglobal(g_LuaState, "playerBase");
 
     if (!LoadScriptFromResource("main") || !LoadScriptFromResource("cheats")) {
         Log("Failed to load embedded Lua scripts.");

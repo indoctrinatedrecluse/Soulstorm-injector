@@ -1,11 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
 project(PayloadTarget)
 
-# Suppress warnings in newer CMake versions regarding FetchContent_Populate
-if(POLICY CMP0169)
-    cmake_policy(SET CMP0169 OLD)
-endif()
-
 include(FetchContent)
 
 # --- MinHook for function hooking ---
@@ -14,10 +9,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
     GIT_TAG        v1.3.3
 )
-FetchContent_GetProperties(minhook)
-if(NOT minhook_POPULATED)
-    FetchContent_Populate(minhook)
-endif()
+FetchContent_MakeAvailable(minhook)
 
 # MinHook does not have a CMakeLists.txt in its root directory,
 # so we must compile its source files manually.
@@ -28,21 +20,18 @@ target_include_directories(MinHook PUBLIC "${minhook_SOURCE_DIR}/include")
 
 # --- Lua for scripting ---
 FetchContent_Declare(
-    lua_source
+    lua
     GIT_REPOSITORY https://github.com/lua/lua.git
     GIT_TAG        v5.4.4
 )
-FetchContent_GetProperties(lua_source)
-if(NOT lua_source_POPULATED)
-    FetchContent_Populate(lua_source)
-endif()
+FetchContent_MakeAvailable(lua)
 
 # Get all Lua C files but exclude the executables and onelua.c
-file(GLOB LUA_SOURCES "${lua_source_SOURCE_DIR}/*.c")
-list(REMOVE_ITEM LUA_SOURCES "${lua_source_SOURCE_DIR}/lua.c" "${lua_source_SOURCE_DIR}/luac.c" "${lua_source_SOURCE_DIR}/onelua.c")
+file(GLOB LUA_SOURCES "${lua_SOURCE_DIR}/*.c")
+list(REMOVE_ITEM LUA_SOURCES "${lua_SOURCE_DIR}/lua.c" "${lua_SOURCE_DIR}/luac.c" "${lua_SOURCE_DIR}/onelua.c")
 
 add_library(lua_static STATIC ${LUA_SOURCES})
-target_include_directories(lua_static PUBLIC "${lua_source_SOURCE_DIR}")
+target_include_directories(lua_static PUBLIC "${lua_SOURCE_DIR}")
 
 if(MSVC)
     target_compile_options(lua_static PRIVATE /W0) # suppress lua warnings
@@ -55,10 +44,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
     GIT_TAG        v1.88
 )
-FetchContent_GetProperties(imgui)
-if(NOT imgui_POPULATED)
-    FetchContent_Populate(imgui)
-endif()
+FetchContent_MakeAvailable(imgui)
 
 add_library(imgui STATIC
     "${imgui_SOURCE_DIR}/imgui.cpp"
@@ -89,7 +75,7 @@ target_link_libraries(payload PRIVATE MinHook lua_static imgui psapi dbghelp)
 
 # Add include directories for all dependencies
 target_include_directories(payload PRIVATE
-    "${lua_source_SOURCE_DIR}"
+    "${lua_SOURCE_DIR}"
     "${minhook_SOURCE_DIR}/include"
     "${imgui_SOURCE_DIR}"
 )
