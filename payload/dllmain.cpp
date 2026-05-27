@@ -154,18 +154,18 @@ void __fastcall DetourResourceUpdate(void* ecx, void* edx, void* resource_struct
 
     if (IsPlayerResource(resourceOwner, g_playerBase)) {
         if (Cheats::infinite_resources) {
-            *(float*)((uintptr_t)ecx + 0x00) = 99999.0f; // Req
-            *(float*)((uintptr_t)ecx + 0x04) = 99999.0f; // Power
+            SafeWriteFloat((uintptr_t)ecx + 0x00, 99999.0f); // Req
+            SafeWriteFloat((uintptr_t)ecx + 0x04, 99999.0f); // Power
         }
-        if (Cheats::infinite_faith) *(float*)((uintptr_t)ecx + 0x0C) = 99999.0f;
-        if (Cheats::infinite_souls) *(float*)((uintptr_t)ecx + 0x10) = 99999.0f;
+        if (Cheats::infinite_faith) SafeWriteFloat((uintptr_t)ecx + 0x0C, 99999.0f);
+        if (Cheats::infinite_souls) SafeWriteFloat((uintptr_t)ecx + 0x10, 99999.0f);
     }
 
     pOrigResourceUpdate(ecx, edx, resource_struct);
 }
 
 void __fastcall DetourBuildTimeUpdate(void* ecx, void* edx, void* build_struct) {
-    __try { *(float*)((uintptr_t)ecx + 0x0C) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourBuildTimeUpdate"); }
+    SafeWriteFloat((uintptr_t)ecx + 0x0C, 0.0f);
     pOrigBuildTimeUpdate(ecx, edx, build_struct);
 }
 
@@ -174,9 +174,7 @@ void __fastcall DetourMoraleUpdate(void* ecx, void* edx, void* esp_plus_10) {
     __asm { mov entityOwner, ebp }
 
     if (IsPlayerMorale(entityOwner, g_playerBase)) {
-        __try {
-            *(float*)((uintptr_t)ecx + 0x08) = 1.0f;
-        } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourMoraleUpdate"); }
+        SafeWriteFloat((uintptr_t)ecx + 0x08, 1.0f);
         return;
     }
 
@@ -184,17 +182,17 @@ void __fastcall DetourMoraleUpdate(void* ecx, void* edx, void* esp_plus_10) {
 }
 
 void __fastcall DetourSquadCapUpdate(void* ecx, void* edx) {
-    __try { *(float*)ecx = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourSquadCapUpdate"); }
+    SafeWriteFloat((uintptr_t)ecx, 0.0f);
     pOrigSquadCapUpdate(ecx, edx);
 }
 
 void __fastcall DetourEquipTimeUpdate(void* ecx, void* edx) {
-    __try { *(float*)((uintptr_t)ecx + 0x08) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourEquipTimeUpdate"); }
+    SafeWriteFloat((uintptr_t)ecx + 0x08, 0.0f);
     pOrigEquipTimeUpdate(ecx, edx);
 }
 
 void __fastcall DetourFogOfWarUpdate(void* ecx, void* edx) {
-    __try { *(float*)((uintptr_t)ecx + 0xC58) = 0.1f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourFogOfWarUpdate"); }
+    SafeWriteFloat((uintptr_t)ecx + 0xC58, 0.1f);
     pOrigFogOfWarUpdate(ecx, edx);
 }
 
@@ -203,9 +201,7 @@ void __fastcall DetourOneHitKill(void* ecx, void* edx, void* arg1) {
     __asm { mov entityOwner, esi }
 
     if (!IsPlayerEntity(entityOwner, g_playerBase)) {
-        __try {
-            *(float*)((uintptr_t)ecx + 0x08) = 90000.0f;
-        } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourOneHitKill"); }
+        SafeWriteFloat((uintptr_t)ecx + 0x08, 90000.0f);
     }
 
     pOrigOneHitKill(ecx, edx, arg1);
@@ -216,16 +212,14 @@ void __fastcall DetourInstantCapture(void* ecx, void* edx) {
     __asm { mov entityOwner, esi }
 
     if (IsPlayerEntity(entityOwner, g_playerBase)) {
-         __try {
-            *(float*)((uintptr_t)ecx + 0x44) = 360.0f;
-         } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourInstantCapture"); }
+         SafeWriteFloat((uintptr_t)ecx + 0x44, 360.0f);
     }
 
     pOrigInstantCapture(ecx, edx);
 }
 
 void __fastcall DetourFastAbilities(void* ecx, void* edx) {
-     __try { *(float*)((uintptr_t)ecx + 0x78) = 0.0f; } __except(EXCEPTION_EXECUTE_HANDLER) { Log("Exception caught in DetourFastAbilities"); }
+     SafeWriteFloat((uintptr_t)ecx + 0x78, 0.0f);
      pOrigFastAbilities(ecx, edx);
 }
 
@@ -425,73 +419,72 @@ DWORD WINAPI PayloadThread(LPVOID lpParam) {
     Log("Giving the game 3 seconds to initialize DirectX...");
     Sleep(3000);
 
-    #define INIT_HOOK(name, pattern, size) \
+    #define INIT_HOOK(name, pattern) \
         Log("Scanning for " #name "..."); \
-        addr_##name = Memory::FindPattern(size > 6 ? "WXPMod.dll" : "soulstorm.exe", pattern); \
+        addr_##name = Memory::FindPattern(strlen(pattern) > 17 ? "WXPMod.dll" : "soulstorm.exe", pattern); \
         if (addr_##name) { \
             Log("Found " #name " at 0x" + std::to_string(addr_##name)); \
         } else { \
             Log("WARNING: Failed to find " #name); \
         }
 
-    INIT_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50", 6);
-    INIT_HOOK(InfiniteHealth, "D9 56 14 D9 E8", 5);
-    INIT_HOOK(InfiniteResources, "D9 58 04 D9 41 08", 6);
-    INIT_HOOK(FastBuild, "8B 48 0C 89 4F 0C", 5);
-    INIT_HOOK(InfiniteMorale, "D9 46 08 D8 64 24 10", 7);
-    INIT_HOOK(InfiniteCap, "8B 28 8D 4C 24 28", 6);
-    INIT_HOOK(InstantEquipment, "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83", 6);
-    INIT_HOOK(InstantCapture, "D9 5E 44 74 18", 5);
-    INIT_HOOK(FastAbilities, "DB 46 78 D9 5C 24 08", 7);
-    INIT_HOOK(RemoveFOW, "D9 81 60 0C 00 00", 6);
-    INIT_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18", 7);
-    INIT_HOOK(AllWargear, "83 39 00 74 03", 5);
+    INIT_HOOK(GetPlayerBase, "3B 87 B8 01 00 00 75 19 8B CE E8 50");
+    INIT_HOOK(InfiniteHealth, "D9 56 14 D9 E8");
+    INIT_HOOK(InfiniteResources, "D9 58 04 D9 41 08");
+    INIT_HOOK(FastBuild, "8B 48 0C 89 4F 0C");
+    INIT_HOOK(InfiniteMorale, "D9 46 08 D8 64 24 10");
+    INIT_HOOK(InfiniteCap, "8B 28 8D 4C 24 28");
+    INIT_HOOK(InstantEquipment, "8B 50 08 89 57 08 8B 40 0C 89 47 0C 83");
+    INIT_HOOK(InstantCapture, "D9 5E 44 74 18");
+    INIT_HOOK(FastAbilities, "DB 46 78 D9 5C 24 08");
+    INIT_HOOK(RemoveFOW, "D9 81 60 0C 00 00");
+    INIT_HOOK(OneHitKill, "D9 46 08 D9 5C 24 18");
+    INIT_HOOK(AllWargear, "83 39 00 74 03");
 
-    // Skip DirectX init block to avoid scope errors
-    HWND window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
-    if (!window) {
-         Log("ERROR: W40kWindow not found. Cannot hook DirectX.");
-         goto cleanup_and_exit;
-    }
+    // Scope block to resolve d3dpp initialization warning when using goto
+    {
+        HWND window = FindWindowA("W40kWindow", "Dawn of War: Soulstorm");
+        if (!window) {
+             Log("ERROR: W40kWindow not found. Cannot hook DirectX.");
+             goto cleanup_and_exit;
+        }
 
-    IDirect3D9* pD3D;
-    pD3D = Direct3DCreate9(D3D_SDK_VERSION);
-    if(!pD3D) {
-        Log("ERROR: Direct3DCreate9 failed.");
-        goto cleanup_and_exit;
-    }
+        IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
+        if(!pD3D) {
+            Log("ERROR: Direct3DCreate9 failed.");
+            goto cleanup_and_exit;
+        }
 
-    D3DPRESENT_PARAMETERS d3dpp;
-    ZeroMemory(&d3dpp, sizeof(d3dpp));
-    d3dpp.Windowed = TRUE;
-    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
+        D3DPRESENT_PARAMETERS d3dpp;
+        ZeroMemory(&d3dpp, sizeof(d3dpp));
+        d3dpp.Windowed = TRUE;
+        d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
 
-    IDirect3DDevice9* pDummyDevice = nullptr;
-    if(FAILED(pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
-         Log("ERROR: CreateDevice failed.");
-         pD3D->Release();
-         goto cleanup_and_exit;
-    }
+        IDirect3DDevice9* pDummyDevice = nullptr;
+        if(FAILED(pD3D->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &d3dpp, &pDummyDevice))) {
+             Log("ERROR: CreateDevice failed.");
+             pD3D->Release();
+             goto cleanup_and_exit;
+        }
 
-    uintptr_t* vTable;
-    vTable = (uintptr_t*)pDummyDevice;
-    vTable = (uintptr_t*)vTable[0];
-    uintptr_t endSceneAddr;
-    endSceneAddr = vTable[42];
-    pDummyDevice->Release();
-    pD3D->Release();
-    Log("EndScene address found at 0x" + std::to_string(endSceneAddr));
+        uintptr_t* vTable = (uintptr_t*)pDummyDevice;
+        vTable = (uintptr_t*)vTable[0];
+        uintptr_t endSceneAddr = vTable[42];
+        pDummyDevice->Release();
+        pD3D->Release();
+        Log("EndScene address found at 0x" + std::to_string(endSceneAddr));
 
-    if (MH_Initialize() != MH_OK) {
-        Log("ERROR: MH_Initialize failed.");
-        goto cleanup_and_exit;
-    }
+        if (MH_Initialize() != MH_OK) {
+            Log("ERROR: MH_Initialize failed.");
+            goto cleanup_and_exit;
+        }
 
-    if (MH_CreateHook((LPVOID)endSceneAddr, &DetourEndScene, (LPVOID*)&pOriginalEndScene) == MH_OK) {
-        MH_EnableHook((LPVOID)endSceneAddr);
-        Log("EndScene hooked via MinHook.");
-    } else {
-        Log("ERROR: Failed to hook EndScene.");
+        if (MH_CreateHook((LPVOID)endSceneAddr, &DetourEndScene, (LPVOID*)&pOriginalEndScene) == MH_OK) {
+            MH_EnableHook((LPVOID)endSceneAddr);
+            Log("EndScene hooked via MinHook.");
+        } else {
+            Log("ERROR: Failed to hook EndScene.");
+        }
     }
 
     if (addr_GetPlayerBase) {
